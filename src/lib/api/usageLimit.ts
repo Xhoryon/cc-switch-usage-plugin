@@ -36,12 +36,17 @@ export const usageLimitApi = {
     return invoke("reset_usage_limit", { providerId, appType: appId });
   },
 
-  getUsdCnyRate: async (): Promise<string> => {
-    return invoke("get_usd_cny_rate");
+  /** 本地 USD → 指定币种汇率（未配置返回默认值；USD 返回 "1"） */
+  getExchangeRate: async (currency: UsageLimitCurrency): Promise<string> => {
+    return invoke("get_exchange_rate", { currency });
   },
 
-  setUsdCnyRate: async (rate: string): Promise<void> => {
-    return invoke("set_usd_cny_rate", { rate });
+  /** 保存本地 USD → 指定币种汇率（必须 > 0；USD 无需设置） */
+  setExchangeRate: async (
+    currency: UsageLimitCurrency,
+    rate: string,
+  ): Promise<void> => {
+    return invoke("set_exchange_rate", { currency, rate });
   },
 };
 

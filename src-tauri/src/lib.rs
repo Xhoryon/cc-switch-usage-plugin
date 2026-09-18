@@ -1610,8 +1610,8 @@ pub fn run() {
             commands::get_usage_limit_status,
             commands::save_usage_limit,
             commands::reset_usage_limit,
-            commands::get_usd_cny_rate,
-            commands::set_usd_cny_rate,
+            commands::get_exchange_rate,
+            commands::set_exchange_rate,
             // Session usage sync
             commands::sync_session_usage,
             commands::rebuild_codex_usage,

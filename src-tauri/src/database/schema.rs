@@ -4,7 +4,7 @@
 
 use super::{lock_conn, Database, SCHEMA_VERSION};
 use crate::error::AppError;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -363,6 +363,11 @@ impl Database {
         //   避免 SQLite REAL 浮点误差影响限额判断。
         // - usage_start_at：预算统计窗口起点（unix 秒）。重置使用量 = 推进该时间戳，
         //   不删除任何历史 Usage 明细。
+        // - reset_period（V1.0.1）：重置周期 never/hourly/daily/weekly/monthly。
+        // - currency（V1.0.2）：不加 CHECK 约束——币种集合会扩展（USD/CNY/EUR/
+        //   JPY/GBP），值域由应用层（保存路径 LimitCurrency::parse）校验、读取侧
+        //   未知值回退 USD；避免每次扩展币种都要重建表。limit_type 值域稳定，
+        //   保留 CHECK。
         // - 成本统计不在此表冗余存储（避免双 SSOT），始终从 proxy_request_logs 实时聚合。
         conn.execute(
             "CREATE TABLE IF NOT EXISTS api_key_limits (
@@ -371,9 +376,10 @@ impl Database {
                 credential_fingerprint TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 0,
                 limit_type TEXT NOT NULL CHECK (limit_type IN ('money', 'token')),
-                currency TEXT CHECK (currency IN ('USD', 'CNY')),
+                currency TEXT,
                 limit_amount TEXT NOT NULL,
                 usage_start_at INTEGER NOT NULL,
+                reset_period TEXT NOT NULL DEFAULT 'never',
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY (provider_id, app_type),
@@ -612,6 +618,16 @@ impl Database {
                         log::info!("迁移数据库从 v19 到 v20（添加 API Key 使用限额表）");
                         Self::migrate_v19_to_v20(conn)?;
                         Self::set_user_version(conn, 20)?;
+                    }
+                    20 => {
+                        log::info!("迁移数据库从 v20 到 v21（限额表添加重置周期列）");
+                        Self::migrate_v20_to_v21(conn)?;
+                        Self::set_user_version(conn, 21)?;
+                    }
+                    21 => {
+                        log::info!("迁移数据库从 v21 到 v22（限额表移除币种约束，多币种支持）");
+                        Self::migrate_v21_to_v22(conn)?;
+                        Self::set_user_version(conn, 22)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1709,6 +1725,100 @@ impl Database {
             }
         }
 
+        Ok(())
+    }
+
+    /// v20 -> v21 迁移：`api_key_limits` 添加重置周期列（V1.0.1）
+    ///
+    /// - `reset_period`：never/hourly/daily/weekly/monthly，存量行为 never
+    ///   （即 V1.0 的「仅手动重置」语义），完全向后兼容。
+    /// - NOT NULL + DEFAULT 保证旧行回填；不加 CHECK（与全新 DDL 保持一致，
+    ///   值域由应用层校验，读取侧未知值回退 never）。
+    /// - add_column_if_missing 幂等；缺表库（异常/测试夹具）跳过，
+    ///   create_tables 会以含列的新 DDL 建表。
+    fn migrate_v20_to_v21(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "api_key_limits")? {
+            Self::add_column_if_missing(
+                conn,
+                "api_key_limits",
+                "reset_period",
+                "TEXT NOT NULL DEFAULT 'never'",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// v21 -> v22 迁移：`api_key_limits` 移除 currency 的 CHECK 约束（V1.0.2）
+    ///
+    /// 币种集合从 USD/CNY 扩展到 USD/CNY/EUR/JPY/GBP。SQLite 无法修改既有
+    /// CHECK，需标准四步表重建：建新表（无 currency CHECK）→ 拷贝数据 →
+    /// 删旧表 → 改名。幂等性通过检查 sqlite_master 中的建表 SQL 是否仍含
+    /// `CHECK (currency` 判断；全新 DDL（create_tables_on_conn）已无该
+    /// 约束，命中跳过。币种值域自此完全由应用层校验，读取侧未知值回退 USD。
+    fn migrate_v21_to_v22(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "api_key_limits")? {
+            return Ok(());
+        }
+        // FK 父表守卫：重建后的表仍带 → providers 的外键，父表缺失时（极简
+        // 迁移测试夹具）触碰该表的 DML 会报 "no such table: providers"。
+        // 真实库由 create_tables_on_conn 保证 providers 始终存在，此守卫
+        // 纯为夹具兜底。
+        if !Self::table_exists(conn, "providers")? {
+            log::warn!("[v22] providers 表不存在（极简测试夹具），跳过 api_key_limits 重建");
+            return Ok(());
+        }
+        let create_sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'api_key_limits'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let still_has_currency_check = create_sql
+            .as_deref()
+            .is_some_and(|sql| sql.to_uppercase().contains("CHECK (CURRENCY"));
+        if !still_has_currency_check {
+            return Ok(());
+        }
+
+        conn.execute(
+            "CREATE TABLE api_key_limits_v22 (
+                provider_id TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                credential_fingerprint TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                limit_type TEXT NOT NULL CHECK (limit_type IN ('money', 'token')),
+                currency TEXT,
+                limit_amount TEXT NOT NULL,
+                usage_start_at INTEGER NOT NULL,
+                reset_period TEXT NOT NULL DEFAULT 'never',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (provider_id, app_type),
+                FOREIGN KEY (provider_id, app_type) REFERENCES providers(id, app_type) ON DELETE CASCADE
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("v22 重建 api_key_limits 失败: {e}")))?;
+        conn.execute(
+            "INSERT INTO api_key_limits_v22 (
+                provider_id, app_type, credential_fingerprint, enabled, limit_type,
+                currency, limit_amount, usage_start_at, reset_period, created_at, updated_at
+             ) SELECT provider_id, app_type, credential_fingerprint, enabled, limit_type,
+                    currency, limit_amount, usage_start_at, reset_period, created_at, updated_at
+             FROM api_key_limits",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("v22 迁移限额配置数据失败: {e}")))?;
+        conn.execute("DROP TABLE api_key_limits", [])
+            .map_err(|e| AppError::Database(format!("v22 删除旧限额表失败: {e}")))?;
+        conn.execute(
+            "ALTER TABLE api_key_limits_v22 RENAME TO api_key_limits",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("v22 重命名限额表失败: {e}")))?;
+        log::info!("api_key_limits 已重建：currency CHECK 约束移除（多币种支持）");
         Ok(())
     }
 

@@ -4,8 +4,8 @@
 
 ### 為 CC Switch 增加按 API Key 的使用限額（預算）——由本地代理強制執行
 
-[![Release](https://img.shields.io/github/v/release/Xhoryon/ccswitch-usage-plugin?color=blue&label=release)](https://github.com/Xhoryon/ccswitch-usage-plugin/releases)
-[![Platform](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-lightgrey.svg)](https://github.com/Xhoryon/ccswitch-usage-plugin/releases)
+[![Release](https://img.shields.io/github/v/release/Xhoryon/cc-switch-usage-plugin?color=blue&label=release)](https://github.com/Xhoryon/cc-switch-usage-plugin/releases)
+[![Platform](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-lightgrey.svg)](https://github.com/Xhoryon/cc-switch-usage-plugin/releases)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 [English](README.md) | [简体中文](README_ZH.md) | 繁體中文 | [日本語](README_JA.md)
@@ -18,12 +18,17 @@
 
 **CC Switch Usage Plugin** 在開源供應商切換工具
 [CC Switch](https://github.com/farion1231/cc-switch) 的基礎上增加了預算功能：
-每個 API Key 都可以設定**使用上限**——金額（USD / CNY）或 Token 數量。達到上限後，
-CC Switch 本地代理會**直接拒絕新的請求**並返回明確錯誤，而不是只做統計。
+每個 API Key 都可以設定**使用上限**——金額（USD / CNY / EUR / JPY / GBP）
+或 Token 數量。達到上限後，CC Switch 本地代理會**直接拒絕新的請求**並返回
+明確錯誤，而不是只做統計。
 
 ## 功能特性
 
-- **金額限額** — USD 或 CNY，透過可修改的本地 USD→CNY 匯率換算（預設 7.2，不連網）
+- **金額限額** — USD / CNY / EUR / JPY / GBP 五種主流貨幣；非美元幣種透過
+  本地 USD→X 匯率換算，匯率可在對話框內自行修改（提供合理預設值，不連網）
+- **重置週期** — 可保持純手動重置，也可讓用量在本地時區邊界自動重新統計：
+  每小時 / 每天 / 每週（週一起）/ 每月（每月 1 日）。用滿的視窗到下個邊界
+  自動恢復，無需手動干預
 - **Token 限額** — 與內建用量面板相同的標準化 Token 統計口徑，兩邊數字永遠一致
 - **真正的強制執行** — 代理在**轉發前**檢查預算；達到限額後新請求快速失敗並返回結構化的
   `usage_limit_reached` 錯誤（HTTP 429）。已發出的請求允許正常完成，因此最後一個請求
@@ -37,7 +42,7 @@ CC Switch 本地代理會**直接拒絕新的請求**並返回明確錯誤，而
 
 ## 下載安裝
 
-1. 從 [Releases](https://github.com/Xhoryon/ccswitch-usage-plugin/releases) 頁面下載
+1. 從 [Releases](https://github.com/Xhoryon/cc-switch-usage-plugin/releases) 頁面下載
    `CC.Switch_3.20.3_aarch64_usage-limit.dmg`（macOS，Apple Silicon）。
 2. 掛載 DMG，將 **CC Switch.app** 拖入「應用程式」。
 
@@ -45,7 +50,8 @@ CC Switch 本地代理會**直接拒絕新的請求**並返回明確錯誤，而
 
 1. 開啟 CC Switch，切換到 **Claude / Codex / Gemini / Grok Build**。
 2. 游標停留在供應商卡片上，點擊**儀表板圖示**（使用限額）。
-3. 打開開關，選擇**金額**或 **Token**，輸入上限並儲存。
+3. 打開開關，選擇**金額**或 **Token**，再選幣種與重置週期（金額模式），
+   輸入上限並儲存。
 4. 為該應用開啟本地路由接管後，限額開始強制執行。
 5. 「重置使用量」只是把統計起點推進到當下，用量面板中的歷史資料完整保留。
 
@@ -65,6 +71,10 @@ pnpm build        # 需要可用的 Rust 工具鏈（stable）
 ```
 
 架構說明與已知限制（中文）：[docs/development_log.md](docs/development_log.md)。
+使用限額知識庫提供四種語言版本：[簡體中文](docs/usage-limit-knowledge-base-zh.md) |
+[English](docs/usage-limit-knowledge-base-en.md) |
+[繁體中文](docs/usage-limit-knowledge-base-zh-TW.md) |
+[日本語](docs/usage-limit-knowledge-base-ja.md)。
 
 ## 致謝
 

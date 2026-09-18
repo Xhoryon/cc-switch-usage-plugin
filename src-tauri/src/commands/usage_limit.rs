@@ -44,17 +44,25 @@ pub fn reset_usage_limit(
     state.db.get_budget_status(&provider_id, &app_type)
 }
 
-/// 读取本地 USD → CNY 汇率（未配置时返回默认值）
+/// 读取本地 USD → 指定币种汇率（未配置时返回默认值；USD 返回 1）
 #[tauri::command]
-pub fn get_usd_cny_rate(state: State<'_, AppState>) -> Result<String, AppError> {
-    let rate = state.db.get_usd_cny_exchange_rate()?;
+pub fn get_exchange_rate(state: State<'_, AppState>, currency: String) -> Result<String, AppError> {
+    let currency = crate::services::usage_limit::LimitCurrency::parse(&currency)
+        .ok_or_else(|| AppError::InvalidInput(format!("未知币种: {currency}")))?;
+    let rate = state.db.get_exchange_rate(currency)?;
     Ok(rate.to_string())
 }
 
-/// 保存本地 USD → CNY 汇率（必须 > 0）
+/// 保存本地 USD → 指定币种汇率（必须 > 0；USD 无需设置）
 #[tauri::command]
-pub fn set_usd_cny_rate(state: State<'_, AppState>, rate: String) -> Result<(), AppError> {
+pub fn set_exchange_rate(
+    state: State<'_, AppState>,
+    currency: String,
+    rate: String,
+) -> Result<(), AppError> {
+    let currency = crate::services::usage_limit::LimitCurrency::parse(&currency)
+        .ok_or_else(|| AppError::InvalidInput(format!("未知币种: {currency}")))?;
     let parsed = Decimal::from_str(&rate)
         .map_err(|_| AppError::InvalidInput(format!("汇率格式无效: {rate}")))?;
-    state.db.set_usd_cny_exchange_rate(parsed)
+    state.db.set_exchange_rate(currency, parsed)
 }

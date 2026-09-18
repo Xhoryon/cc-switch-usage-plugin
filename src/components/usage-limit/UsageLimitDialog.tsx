@@ -1,26 +1,28 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, Gauge, RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import type { Provider } from "@/types";
 import type { AppId } from "@/lib/api";
 import {
+  useExchangeRate,
   useResetUsageLimit,
   useSaveUsageLimit,
-  useSetUsdCnyRate,
-  useUsdCnyRate,
+  useSetExchangeRate,
 } from "@/lib/query/usageLimit";
 import {
   budgetSummary,
   formatMoney,
   formatTokensExact,
 } from "./UsageLimitButton";
-import type {
-  UsageLimitConfig,
-  UsageLimitCurrency,
-  UsageLimitState,
-  UsageLimitStatus,
-  UsageLimitType,
+import {
+  USAGE_LIMIT_CURRENCY_SYMBOLS,
+  type UsageLimitConfig,
+  type UsageLimitCurrency,
+  type UsageLimitResetPeriod,
+  type UsageLimitState,
+  type UsageLimitStatus,
+  type UsageLimitType,
 } from "@/types/usageLimit";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -62,46 +64,65 @@ export function UsageLimitDialog({
   status,
   onClose,
 }: UsageLimitDialogProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
 
   const [enabled, setEnabled] = useState(false);
   const [limitType, setLimitType] = useState<UsageLimitType>("money");
   const [currency, setCurrency] = useState<UsageLimitCurrency>("USD");
   const [amountInput, setAmountInput] = useState("");
+  const [resetPeriod, setResetPeriod] =
+    useState<UsageLimitResetPeriod>("never");
   const [rateInput, setRateInput] = useState("");
+  const [touchedRate, setTouchedRate] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
-  const [touchedConfig, setTouchedConfig] = useState(false);
 
-  const { data: savedRate } = useUsdCnyRate();
+  // 汇率按币种分查询；切换币种后重新加载对应汇率
+  const { data: savedRate } = useExchangeRate(currency);
   const saveMutation = useSaveUsageLimit(provider.id, appId);
   const resetMutation = useResetUsageLimit(provider.id, appId);
-  const setRateMutation = useSetUsdCnyRate();
+  const setRateMutation = useSetExchangeRate();
 
-  // 打开或配置到达时，用已保存配置初始化（关闭→重开保留原配置，§24）
+  // 打开时用已保存配置初始化（关闭→重开保留原配置，§24）。
+  // 仅在「isOpen 由关变开」后的首次初始化及随后的配置到达时执行；
+  // 打开期间的后台 refetch（refetchOnMount / 记账事件）不得打断用户编辑。
+  const wasOpenRef = useRef(false);
   useEffect(() => {
     if (!isOpen) {
+      wasOpenRef.current = false;
       return;
     }
+    if (wasOpenRef.current) {
+      return;
+    }
+    wasOpenRef.current = true;
     setEnabled(status?.enabled ?? false);
     setLimitType(status?.limitType ?? "money");
-    setCurrency(status?.currency === "CNY" ? "CNY" : "USD");
+    setCurrency(status?.currency ?? "USD");
     setAmountInput(status?.limitAmount ?? "");
+    setResetPeriod(status?.resetPeriod ?? "never");
+    setTouchedRate(false);
+    setRateInput("");
     setValidationError(null);
-    setTouchedConfig(false);
   }, [
     isOpen,
     status?.enabled,
     status?.limitType,
     status?.currency,
     status?.limitAmount,
+    status?.resetPeriod,
   ]);
 
+  // 未手动编辑过汇率时，用当前币种的已保存（或默认）汇率回填。
+  // 依赖必须包含 currency：切换币种的瞬间会清空输入框（见 onClick），
+  // 新币种汇率（即使与旧值相同）返回后由本 effect 回填；未返回前输入框
+  // 保持为空，保存被校验拦截——杜绝「上一币种汇率被持久化为当前币种」
+  // 的竞态（审查 P1-1）。
   useEffect(() => {
-    if (savedRate && !touchedConfig) {
+    if (savedRate && !touchedRate) {
       setRateInput(savedRate);
     }
-  }, [savedRate, touchedConfig]);
+  }, [currency, savedRate, touchedRate]);
 
   const state: UsageLimitState = status?.state ?? "off";
   const percent = useMemo(() => {
@@ -123,24 +144,25 @@ export function UsageLimitDialog({
       : t("usageLimit.title");
   }, [status, state, t]);
 
-  // 当前输入币种下的已用金额（CNY 优先用后端换算值，缺失时按本地汇率估算）
+  // 当前输入币种下的已用金额：
+  // - USD 直接用 USD 原值
+  // - 已保存限额币种与所选一致时，用后端换算值
+  // - 其余（切换中 / 尚未保存）按本地汇率输入估算
   const usedMoneyInInputCurrency = useMemo(() => {
     if (!status) {
       return 0;
     }
-    if (currency === "CNY") {
-      // 注意 Number(null) === 0：必须显式判空才能走汇率换算兜底
-      const converted =
-        status.usedMoneyInCurrency != null
-          ? Number(status.usedMoneyInCurrency)
-          : NaN;
+    if (currency === "USD") {
+      return Number(status.usedMoneyUsd);
+    }
+    if (status.currency === currency && status.usedMoneyInCurrency != null) {
+      const converted = Number(status.usedMoneyInCurrency);
       if (Number.isFinite(converted)) {
         return converted;
       }
-      const rate = Number(rateInput) || 0;
-      return Number(status.usedMoneyUsd) * rate;
     }
-    return Number(status.usedMoneyUsd);
+    const rate = Number(rateInput) || 0;
+    return Number(status.usedMoneyUsd) * rate;
   }, [status, currency, rateInput]);
 
   const limitValue = useMemo(() => Number(amountInput), [amountInput]);
@@ -175,9 +197,16 @@ export function UsageLimitDialog({
       setValidationError(t("usageLimit.errorInvalidTokens"));
       return;
     }
-    if (limitType === "money" && currency === "CNY") {
+    if (limitType === "money" && currency !== "USD") {
       const rate = Number(rateInput.trim());
-      if (!rateInput.trim() || !Number.isFinite(rate) || rate <= 0) {
+      // 上限与后端 set_exchange_rate 一致（1,000,000）：
+      // 前端先拦住，避免「config 已保存、汇率被后端拒绝」的半保存状态
+      if (
+        !rateInput.trim() ||
+        !Number.isFinite(rate) ||
+        rate <= 0 ||
+        rate > 1_000_000
+      ) {
         setValidationError(t("usageLimit.errorInvalidRate"));
         return;
       }
@@ -189,18 +218,22 @@ export function UsageLimitDialog({
       limitType,
       currency: limitType === "money" ? currency : null,
       limitAmount: trimmed,
+      resetPeriod,
     };
     saveMutation.mutate(config, {
       onSuccess: () => {
-        // CNY 模式顺带持久化本地汇率
-        if (limitType === "money" && currency === "CNY") {
+        // 非 USD 币种顺带持久化本地汇率（人工调节，不联网获取）
+        if (limitType === "money" && currency !== "USD") {
           const rate = rateInput.trim();
           if (rate && Number(rate) > 0) {
-            setRateMutation.mutate(rate, {
-              onError: (error) => {
-                toast.error(extractErrorMessage(error));
+            setRateMutation.mutate(
+              { currency, rate },
+              {
+                onError: (error) => {
+                  toast.error(extractErrorMessage(error));
+                },
               },
-            });
+            );
           }
         }
         toast.success(t("usageLimit.saved"));
@@ -227,7 +260,6 @@ export function UsageLimitDialog({
 
   const toggleType = (type: UsageLimitType) => {
     setLimitType(type);
-    setTouchedConfig(true);
     setValidationError(null);
   };
 
@@ -265,7 +297,6 @@ export function UsageLimitDialog({
               checked={enabled}
               onCheckedChange={(checked) => {
                 setEnabled(checked);
-                setTouchedConfig(true);
                 setValidationError(null);
               }}
               aria-label={t("usageLimit.enable")}
@@ -296,50 +327,65 @@ export function UsageLimitDialog({
 
               {limitType === "money" && (
                 <>
-                  {/* 币种 */}
+                  {/* 币种（V1.0.2：5 种主流货币，USD 为内部计价基准） */}
                   <div className="space-y-2">
                     <span className="text-sm font-medium">
                       {t("usageLimit.currency")}
                     </span>
-                    <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
-                      <SegmentOption
-                        active={currency === "CNY"}
-                        label={t("usageLimit.cny")}
-                        onClick={() => {
-                          setCurrency("CNY");
-                          setTouchedConfig(true);
-                          setValidationError(null);
-                        }}
-                      />
-                      <SegmentOption
-                        active={currency === "USD"}
-                        label={t("usageLimit.usd")}
-                        onClick={() => {
-                          setCurrency("USD");
-                          setTouchedConfig(true);
-                          setValidationError(null);
-                        }}
-                      />
+                    <div
+                      className="grid grid-cols-5 gap-1 rounded-lg bg-muted p-1"
+                      data-testid="usage-limit-currency"
+                    >
+                      {(
+                        [
+                          ["USD", "usd"],
+                          ["CNY", "cny"],
+                          ["EUR", "eur"],
+                          ["JPY", "jpy"],
+                          ["GBP", "gbp"],
+                        ] as const
+                      ).map(([value, labelKey]) => (
+                        <SegmentOption
+                          key={value}
+                          active={currency === value}
+                          label={t(`usageLimit.${labelKey}`)}
+                          onClick={() => {
+                            setCurrency(value);
+                            // 立刻清空旧币种汇率：新币种汇率返回前输入框为空，
+                            // 保存会被校验拦截，杜绝错误汇率被持久化（审查 P1-1）
+                            setRateInput("");
+                            setTouchedRate(false);
+                            setValidationError(null);
+                          }}
+                        />
+                      ))}
                     </div>
                   </div>
 
-                  {/* CNY 本地汇率（不依赖在线汇率 API） */}
-                  {currency === "CNY" && (
+                  {/* 非 USD 本地汇率（人工调节，不依赖在线汇率 API） */}
+                  {currency !== "USD" && (
                     <div className="space-y-1.5">
                       <label
                         htmlFor="usage-limit-rate"
                         className="text-sm font-medium"
                       >
-                        {t("usageLimit.exchangeRate")}
+                        {t("usageLimit.exchangeRate", { currency })}
                       </label>
                       <Input
                         id="usage-limit-rate"
+                        data-testid="usage-limit-rate"
                         value={rateInput}
                         onChange={(e) => {
                           setRateInput(e.target.value);
-                          setTouchedConfig(true);
+                          setTouchedRate(true);
                         }}
-                        placeholder="7.20"
+                        placeholder={
+                          currency === "JPY"
+                            ? "150"
+                            : currency === "CNY"
+                              ? "7.20"
+                              : "0.90"
+                        }
                         inputMode="decimal"
                         className="h-9"
                       />
@@ -349,7 +395,7 @@ export function UsageLimitDialog({
                     </div>
                   )}
 
-                  {/* 最大金额 */}
+                  {/* 最大金额（带币种符号后缀） */}
                   <div className="space-y-1.5">
                     <label
                       htmlFor="usage-limit-amount"
@@ -357,19 +403,26 @@ export function UsageLimitDialog({
                     >
                       {t("usageLimit.maxAmount")}
                     </label>
-                    <Input
-                      id="usage-limit-amount"
-                      data-testid="usage-limit-amount"
-                      value={amountInput}
-                      onChange={(e) => {
-                        setAmountInput(e.target.value);
-                        setTouchedConfig(true);
-                        setValidationError(null);
-                      }}
-                      placeholder="100.00"
-                      inputMode="decimal"
-                      className="h-9"
-                    />
+                    <div className="relative">
+                      <Input
+                        id="usage-limit-amount"
+                        data-testid="usage-limit-amount"
+                        value={amountInput}
+                        onChange={(e) => {
+                          setAmountInput(e.target.value);
+                          setValidationError(null);
+                        }}
+                        placeholder="100.00"
+                        inputMode="decimal"
+                        className="h-9 pr-10"
+                      />
+                      <span
+                        data-testid="usage-limit-currency-symbol"
+                        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs tabular-nums text-muted-foreground"
+                      >
+                        {USAGE_LIMIT_CURRENCY_SYMBOLS[currency]}
+                      </span>
+                    </div>
                   </div>
                 </>
               )}
@@ -388,7 +441,6 @@ export function UsageLimitDialog({
                     value={amountInput}
                     onChange={(e) => {
                       setAmountInput(e.target.value);
-                      setTouchedConfig(true);
                       setValidationError(null);
                     }}
                     placeholder="5,000,000"
@@ -397,6 +449,59 @@ export function UsageLimitDialog({
                   />
                 </div>
               )}
+
+              {/* 重置周期（V1.0.1）：本地时区周期边界自动重置窗口 */}
+              <div className="space-y-2">
+                <span className="text-sm font-medium">
+                  {t("usageLimit.resetPeriod")}
+                </span>
+                <div
+                  className="grid grid-cols-5 gap-1 rounded-lg bg-muted p-1"
+                  data-testid="usage-limit-reset-period"
+                >
+                  {(
+                    [
+                      ["never", "resetNever"],
+                      ["hourly", "resetHourly"],
+                      ["daily", "resetDaily"],
+                      ["weekly", "resetWeekly"],
+                      ["monthly", "resetMonthly"],
+                    ] as const
+                  ).map(([value, labelKey]) => (
+                    <SegmentOption
+                      key={value}
+                      active={resetPeriod === value}
+                      label={t(`usageLimit.${labelKey}`)}
+                      onClick={() => {
+                        setResetPeriod(value);
+                        setValidationError(null);
+                      }}
+                    />
+                  ))}
+                </div>
+                {resetPeriod === "never" ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t("usageLimit.resetPeriodHint")}
+                  </p>
+                ) : (
+                  // 下次重置时间仅在所选周期与已保存配置一致时展示，
+                  // 避免「正在切换、尚未保存」时展示过期边界
+                  status?.resetPeriod === resetPeriod &&
+                  status.nextResetAt != null && (
+                    <p
+                      className="text-xs text-muted-foreground"
+                      data-testid="usage-limit-next-reset"
+                    >
+                      {t("usageLimit.nextResetAt", {
+                        time: formatResetTime(
+                          status.nextResetAt,
+                          i18n.language,
+                        ),
+                      })}
+                    </p>
+                  )
+                )}
+              </div>
 
               {/* enforcement 边界提示（§20 / §21） */}
               {showEnforcementWarning && (
@@ -502,6 +607,19 @@ export function UsageLimitDialog({
       />
     </>
   );
+}
+
+/** 下次重置时间的本地化展示（与 Usage 页 request 时间同款 locale 推导） */
+function formatResetTime(unixSeconds: number, language: string): string {
+  const locale =
+    language === "zh"
+      ? "zh-CN"
+      : language === "zh-TW"
+        ? "zh-TW"
+        : language === "ja"
+          ? "ja-JP"
+          : "en-US";
+  return new Date(unixSeconds * 1000).toLocaleString(locale);
 }
 
 /** bg-muted 轨道分段选择（与设置页 pill 风格一致） */

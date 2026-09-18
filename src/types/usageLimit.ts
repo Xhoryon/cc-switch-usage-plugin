@@ -5,8 +5,33 @@
 /** 限额模式：同一时间只有一种 */
 export type UsageLimitType = "money" | "token";
 
-/** 金额模式币种。数据库内部成本统一为 USD，CNY 通过本地汇率换算 */
-export type UsageLimitCurrency = "USD" | "CNY";
+/**
+ * 金额模式币种（V1.0.2 起支持 5 种主流货币）。
+ * 数据库内部成本统一为 USD，其他币种通过本地可配置汇率换算（人工调节，不联网）。
+ */
+export type UsageLimitCurrency = "USD" | "CNY" | "EUR" | "JPY" | "GBP";
+
+/** 各币种展示符号（与后端 LimitCurrency::symbol 一致；JPY 加国别前缀消歧） */
+export const USAGE_LIMIT_CURRENCY_SYMBOLS: Record<UsageLimitCurrency, string> =
+  {
+    USD: "$",
+    CNY: "¥",
+    EUR: "€",
+    JPY: "JP¥",
+    GBP: "£",
+  };
+
+/**
+ * 统计窗口重置周期（V1.0.1）。
+ * never = 仅手动重置；其余在本地时区周期边界（整点/零点/周一零点/每月 1 日零点）
+ * 自动重置——后端为懒滚动实现，应用未运行期间跨过的边界在下一次启动时照常生效。
+ */
+export type UsageLimitResetPeriod =
+  | "never"
+  | "hourly"
+  | "daily"
+  | "weekly"
+  | "monthly";
 
 /** enforcement 能力：Proxy 是否真的在该 Provider 的请求路径上 */
 export type UsageLimitEnforcement =
@@ -22,8 +47,12 @@ export interface UsageLimitStatus {
   limitType?: UsageLimitType | null;
   currency?: UsageLimitCurrency | null;
   limitAmount?: string | null;
-  /** 预算统计窗口起点（unix 秒） */
+  /** 预算统计窗口起点（unix 秒；周期重置下为对齐周期边界后的有效起点） */
   usageStartAt?: number | null;
+  /** 重置周期（V1.0.1），缺省视为 never */
+  resetPeriod?: UsageLimitResetPeriod | null;
+  /** 下一次周期重置时间（unix 秒）；never 时为 null */
+  nextResetAt?: number | null;
   /** 窗口内已用金额（USD 原值，十进制字符串） */
   usedMoneyUsd: string;
   /** 限额币种下的已用金额（CNY 限额时已按汇率换算） */
@@ -53,4 +82,6 @@ export interface UsageLimitConfig {
   currency?: UsageLimitCurrency | null;
   /** 金额（十进制字符串）或 token 数（正整数字符串） */
   limitAmount?: string | null;
+  /** 重置周期（V1.0.1），始终显式提交 */
+  resetPeriod: UsageLimitResetPeriod;
 }

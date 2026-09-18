@@ -80,6 +80,7 @@ fn limit_row(
         currency: currency.map(str::to_string),
         limit_amount: amount.to_string(),
         usage_start_at: 1_000_000,
+        reset_period: "never".to_string(),
         created_at: 1_000_000,
         updated_at: 1_000_000,
     }
@@ -295,7 +296,7 @@ fn credential_change_does_not_inherit_old_usage() {
 fn currency_conversion_usd_cny_is_correct() {
     let db = Database::memory().unwrap();
     // 汇率默认 7.2：$10 限额 ≈ ¥72
-    let rate = db.get_usd_cny_exchange_rate().unwrap();
+    let rate = db.get_exchange_rate(LimitCurrency::Cny).unwrap();
     assert_eq!(rate, Decimal::from_str("7.2").unwrap());
 
     // CNY 限额 ¥7.2 = $1 上限；已用 $1.00 → 达到
@@ -306,18 +307,200 @@ fn currency_conversion_usd_cny_is_correct() {
         .is_err());
 
     // 自定义汇率可改
-    db.set_usd_cny_exchange_rate(Decimal::from_str("7.5").unwrap())
+    db.set_exchange_rate(LimitCurrency::Cny, Decimal::from_str("7.5").unwrap())
         .unwrap();
     assert_eq!(
-        db.get_usd_cny_exchange_rate().unwrap(),
+        db.get_exchange_rate(LimitCurrency::Cny).unwrap(),
         Decimal::from_str("7.5").unwrap()
     );
 
     // 非法汇率被拒绝
     assert!(
-        db.set_usd_cny_exchange_rate(Decimal::ZERO).is_err(),
+        db.set_exchange_rate(LimitCurrency::Cny, Decimal::ZERO)
+            .is_err(),
         "汇率必须 > 0"
     );
+}
+
+#[test]
+fn multi_currency_rates_are_independent_with_defaults() {
+    let db = Database::memory().unwrap();
+
+    // 各币种默认汇率合理，且互不干扰
+    for (currency, default) in [
+        (LimitCurrency::Usd, "1"),
+        (LimitCurrency::Cny, "7.2"),
+        (LimitCurrency::Eur, "0.92"),
+        (LimitCurrency::Jpy, "150"),
+        (LimitCurrency::Gbp, "0.79"),
+    ] {
+        assert_eq!(
+            db.get_exchange_rate(currency).unwrap(),
+            Decimal::from_str(default).unwrap(),
+            "{currency:?} 默认汇率"
+        );
+    }
+
+    // 修改 EUR 不影响 JPY / CNY
+    db.set_exchange_rate(LimitCurrency::Eur, Decimal::from_str("0.85").unwrap())
+        .unwrap();
+    assert_eq!(
+        db.get_exchange_rate(LimitCurrency::Eur).unwrap(),
+        Decimal::from_str("0.85").unwrap()
+    );
+    assert_eq!(
+        db.get_exchange_rate(LimitCurrency::Jpy).unwrap(),
+        Decimal::from_str("150").unwrap()
+    );
+    assert_eq!(
+        db.get_exchange_rate(LimitCurrency::Cny).unwrap(),
+        Decimal::from_str("7.2").unwrap()
+    );
+
+    // USD 是内部基准币种：恒为 1，不可设置
+    assert_eq!(
+        db.get_exchange_rate(LimitCurrency::Usd).unwrap(),
+        Decimal::ONE
+    );
+    assert!(db
+        .set_exchange_rate(LimitCurrency::Usd, Decimal::from(2))
+        .is_err());
+
+    // 每个币种的汇率都可以独立设置且被拒绝非法值
+    for currency in [
+        LimitCurrency::Cny,
+        LimitCurrency::Eur,
+        LimitCurrency::Jpy,
+        LimitCurrency::Gbp,
+    ] {
+        assert!(
+            db.set_exchange_rate(currency, Decimal::from_str("-1").unwrap())
+                .is_err(),
+            "{currency:?} 负汇率必须拒绝"
+        );
+    }
+}
+
+#[test]
+fn eur_and_jpy_limits_convert_correctly() {
+    // EUR：€0.92 / 0.92 = $1 上限；已用 $1.00 → 达到
+    let db = Database::memory().unwrap();
+    let fp = seed_limit(&db, "p1", true, "money", Some("EUR"), "0.92");
+    insert_log(&db, "r1", "p1", &fp, 1_000_100, 100, 100, "1.00");
+    let err = db
+        .check_budget_before_forward("p1", "P1", "claude", &fp)
+        .unwrap_err();
+    assert!(err.message.contains("€"), "{}", err.message);
+    assert_eq!(err.detail["currency"], "EUR");
+
+    // JPY：JP¥15000 / 150 = $100 上限；已用 $99（快速通道范围内）→ 放行，
+    // 状态里的已用金额按 JPY 展示（99 × 150 = 14850）
+    let db = Database::memory().unwrap();
+    let fp = seed_limit(&db, "p2", true, "money", Some("JPY"), "15000");
+    insert_log(&db, "r1", "p2", &fp, 1_000_100, 100, 100, "99");
+    assert!(db
+        .check_budget_before_forward("p2", "P2", "claude", &fp)
+        .is_ok());
+    let status = db.get_budget_status("p2", "claude").unwrap();
+    assert_eq!(status.used_money_in_currency.as_deref(), Some("14850"));
+    assert_eq!(status.currency.as_deref(), Some("JPY"));
+
+    // GBP：£0.79 / 0.79 = $1 上限；已用 $0.99 → 放行；再加 $0.02 → 拒绝
+    let db = Database::memory().unwrap();
+    let fp = seed_limit(&db, "p3", true, "money", Some("GBP"), "0.79");
+    insert_log(&db, "r1", "p3", &fp, 1_000_100, 100, 100, "0.99");
+    assert!(db
+        .check_budget_before_forward("p3", "P3", "claude", &fp)
+        .is_ok());
+    insert_log(&db, "r2", "p3", &fp, 1_000_200, 100, 100, "0.02");
+    assert!(db
+        .check_budget_before_forward("p3", "P3", "claude", &fp)
+        .is_err());
+}
+
+#[test]
+fn save_accepts_all_supported_currencies_only() {
+    let db = Database::memory().unwrap();
+    db.save_provider("claude", &claude_provider("p1", "sk-test-multi-currency"))
+        .unwrap();
+
+    for currency in ["USD", "CNY", "EUR", "JPY", "GBP"] {
+        let config = UsageLimitConfig {
+            enabled: true,
+            limit_type: "money".to_string(),
+            currency: Some(currency.to_string()),
+            limit_amount: Some("10".to_string()),
+            reset_period: None,
+        };
+        let status = db.save_budget_config("p1", "claude", &config).unwrap();
+        assert_eq!(status.currency.as_deref(), Some(currency), "{currency}");
+    }
+
+    // 币种 CHECK 已移除，但应用层仍拒绝未知币种
+    let config = UsageLimitConfig {
+        enabled: true,
+        limit_type: "money".to_string(),
+        currency: Some("RUB".to_string()),
+        limit_amount: Some("10".to_string()),
+        reset_period: None,
+    };
+    assert!(db.save_budget_config("p1", "claude", &config).is_err());
+}
+
+#[test]
+fn custom_rate_end_to_end_changes_guard_threshold() {
+    // 审查 P1-3：非默认汇率必须真正影响 guard 阈值——
+    // 把 USD→EUR 汇率改为 0.46 后，€0.92 限额的 USD 阈值变为 $2：
+    // 已用 $1.9 → 放行；累计 $2.0 → 达到拦截
+    let db = Database::memory().unwrap();
+    db.set_exchange_rate(LimitCurrency::Eur, Decimal::from_str("0.46").unwrap())
+        .unwrap();
+    let fp = seed_limit(&db, "p1", true, "money", Some("EUR"), "0.92");
+    insert_log(&db, "r1", "p1", &fp, 1_000_100, 100, 100, "1.90");
+    assert!(db
+        .check_budget_before_forward("p1", "P1", "claude", &fp)
+        .is_ok());
+
+    insert_log(&db, "r2", "p1", &fp, 1_000_200, 100, 100, "0.10");
+    let err = db
+        .check_budget_before_forward("p1", "P1", "claude", &fp)
+        .unwrap_err();
+    assert_eq!(err.detail["currency"], "EUR");
+    assert!(err.message.contains("€"), "{}", err.message);
+
+    // 键名脱节防护：写 EUR 键不得影响 JPY 的默认判定路径
+    assert_eq!(
+        db.get_exchange_rate(LimitCurrency::Jpy).unwrap(),
+        Decimal::from_str("150").unwrap()
+    );
+}
+
+#[test]
+fn corrupt_stored_rate_falls_back_to_default() {
+    // 审查 P2-7：存量脏汇率（settings 被手工改坏）按该币种默认值回退，不拒绝服务
+    let db = Database::memory().unwrap();
+    db.set_exchange_rate(LimitCurrency::Eur, Decimal::from_str("0.92").unwrap())
+        .unwrap();
+    db.set_setting(
+        LimitCurrency::Eur.rate_setting_key().unwrap(),
+        "not-a-number",
+    )
+    .unwrap();
+    assert_eq!(
+        db.get_exchange_rate(LimitCurrency::Eur).unwrap(),
+        Decimal::from_str("0.92").unwrap()
+    );
+
+    // 空字符串与非正值同样回退
+    for garbage in ["", "0", "-3"] {
+        db.set_setting(LimitCurrency::Jpy.rate_setting_key().unwrap(), garbage)
+            .unwrap();
+        assert_eq!(
+            db.get_exchange_rate(LimitCurrency::Jpy).unwrap(),
+            Decimal::from_str("150").unwrap(),
+            "垃圾值 {garbage} 必须回退默认"
+        );
+    }
 }
 
 #[test]
@@ -544,6 +727,7 @@ fn save_validates_and_persists_config() {
         limit_type: "token".to_string(),
         currency: Some("USD".to_string()),
         limit_amount: Some("1000".to_string()),
+        reset_period: None,
     };
     assert!(db.save_budget_config("p1", "claude", &config).is_err());
 
@@ -553,6 +737,7 @@ fn save_validates_and_persists_config() {
         limit_type: "money".to_string(),
         currency: None,
         limit_amount: Some("1000".to_string()),
+        reset_period: None,
     };
     assert!(db.save_budget_config("p1", "claude", &config).is_err());
 
@@ -562,6 +747,7 @@ fn save_validates_and_persists_config() {
         limit_type: "token".to_string(),
         currency: None,
         limit_amount: Some("-5".to_string()),
+        reset_period: None,
     };
     assert!(db.save_budget_config("p1", "claude", &config).is_err());
     assert!(db.get_api_key_limit("p1", "claude").unwrap().is_none());
@@ -572,6 +758,7 @@ fn save_validates_and_persists_config() {
         limit_type: "money".to_string(),
         currency: Some("CNY".to_string()),
         limit_amount: Some("50".to_string()),
+        reset_period: None,
     };
     let status = db.save_budget_config("p1", "claude", &config).unwrap();
     assert!(status.enabled);
@@ -586,6 +773,7 @@ fn save_validates_and_persists_config() {
         limit_type: "money".to_string(),
         currency: Some("CNY".to_string()),
         limit_amount: Some("50".to_string()),
+        reset_period: None,
     };
     let status = db.save_budget_config("p1", "claude", &config).unwrap();
     assert!(!status.enabled);
@@ -601,6 +789,7 @@ fn save_validates_and_persists_config() {
         limit_type: "money".to_string(),
         currency: Some("CNY".to_string()),
         limit_amount: Some("50".to_string()),
+        reset_period: None,
     };
     db.save_budget_config("p1", "claude", &config).unwrap();
     let new_row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
@@ -626,6 +815,7 @@ fn save_validates_and_persists_config() {
         limit_type: "token".to_string(),
         currency: None,
         limit_amount: Some("1000".to_string()),
+        reset_period: None,
     };
     assert!(db.save_budget_config("p2", "claude", &config).is_err());
 }
@@ -713,4 +903,372 @@ fn reset_command_moves_window() {
     let after = db.get_budget_status("p1", "claude").unwrap();
     assert_eq!(after.used_tokens, 0, "重置后窗口内用量为 0");
     assert!(after.usage_start_at.unwrap() >= before.usage_start_at.unwrap());
+}
+
+// ---------- 重置周期（V1.0.1） ----------
+
+use crate::services::usage_limit::ResetPeriod;
+
+/// 覆盖周期字段的 limit 行（金额模式 USD，窗口起点与限额可指定）
+fn limit_row_with_period(
+    provider_id: &str,
+    fingerprint: &str,
+    period: &str,
+    usage_start_at: i64,
+    amount: &str,
+) -> ApiKeyLimitRow {
+    ApiKeyLimitRow {
+        reset_period: period.to_string(),
+        usage_start_at,
+        ..limit_row(provider_id, fingerprint, true, "money", Some("USD"), amount)
+    }
+}
+
+fn local_ts(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> i64 {
+    use chrono::TimeZone;
+    chrono::Local
+        .with_ymd_and_hms(year, month, day, hour, min, sec)
+        .single()
+        .expect("测试用的本地墙钟时刻应存在")
+        .timestamp()
+}
+
+#[test]
+fn period_boundaries_follow_local_calendar() {
+    // 2026-09-18 15:27:08 是周五：整点 / 当天零点 / 本周一零点 / 本月 1 日零点
+    let now = local_ts(2026, 9, 18, 15, 27, 8);
+
+    assert_eq!(ResetPeriod::Never.current_period_start(now), None);
+    assert_eq!(ResetPeriod::Never.next_period_start(now), None);
+
+    assert_eq!(
+        ResetPeriod::Hourly.current_period_start(now),
+        Some(local_ts(2026, 9, 18, 15, 0, 0))
+    );
+    assert_eq!(
+        ResetPeriod::Daily.current_period_start(now),
+        Some(local_ts(2026, 9, 18, 0, 0, 0))
+    );
+    // ISO 周：周一为一周起点 → 2026-09-14（周一）
+    assert_eq!(
+        ResetPeriod::Weekly.current_period_start(now),
+        Some(local_ts(2026, 9, 14, 0, 0, 0))
+    );
+    assert_eq!(
+        ResetPeriod::Monthly.current_period_start(now),
+        Some(local_ts(2026, 9, 1, 0, 0, 0))
+    );
+}
+
+#[test]
+fn next_period_start_is_strictly_future() {
+    // 恰好踩在边界上：当前周期刚开启，下一次重置必须是下一个边界
+    let midnight = local_ts(2026, 9, 18, 0, 0, 0);
+    assert_eq!(
+        ResetPeriod::Daily.next_period_start(midnight),
+        Some(local_ts(2026, 9, 19, 0, 0, 0))
+    );
+    assert_eq!(
+        ResetPeriod::Hourly.next_period_start(midnight),
+        Some(local_ts(2026, 9, 18, 1, 0, 0))
+    );
+    // 月末跨年：12 月的下一个周期边界是次年 1 月 1 日
+    let dec = local_ts(2026, 12, 31, 23, 0, 0);
+    assert_eq!(
+        ResetPeriod::Monthly.next_period_start(dec),
+        Some(local_ts(2027, 1, 1, 0, 0, 0))
+    );
+    // 周边界：周日 23 点的下一个重置是下周一零点
+    let sunday = local_ts(2026, 9, 20, 23, 0, 0);
+    assert_eq!(
+        ResetPeriod::Weekly.next_period_start(sunday),
+        Some(local_ts(2026, 9, 21, 0, 0, 0))
+    );
+}
+
+#[test]
+fn parse_reset_period_accepts_known_values_only() {
+    for (raw, expected) in [
+        ("never", ResetPeriod::Never),
+        ("hourly", ResetPeriod::Hourly),
+        ("daily", ResetPeriod::Daily),
+        ("weekly", ResetPeriod::Weekly),
+        ("monthly", ResetPeriod::Monthly),
+    ] {
+        assert_eq!(ResetPeriod::parse(raw), Some(expected));
+    }
+    assert_eq!(ResetPeriod::parse("yearly"), None);
+    assert_eq!(ResetPeriod::parse(""), None);
+    assert_eq!(ResetPeriod::parse("DAILY"), None, "值域区分大小写");
+}
+
+#[test]
+fn hourly_period_rolls_window_and_recovers_budget() {
+    let db = Database::memory().unwrap();
+    let fp = seed_limit(&db, "p1", true, "money", Some("USD"), "5");
+    // 窗口压回固定历史时间（远早于当前小时边界）：$10 早已超额
+    db.upsert_api_key_limit(&limit_row_with_period("p1", &fp, "hourly", 1_000_000, "5"))
+        .unwrap();
+    insert_log(&db, "r-old", "p1", &fp, 1_000_100, 10, 10, "10.00");
+
+    // guard 先滚动到当前整点再判定：旧周期 $10 出窗 → 放行
+    assert!(db
+        .check_budget_before_forward("p1", "P1", "claude", &fp)
+        .is_ok());
+    let row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
+    let now = chrono::Utc::now().timestamp();
+    let hour_start = ResetPeriod::Hourly.current_period_start(now).unwrap();
+    assert_eq!(row.usage_start_at, hour_start, "窗口必须已滚动到当前整点");
+
+    // 当前整点内的新用量正常计入
+    insert_log(&db, "r-new", "p1", &fp, hour_start + 10, 10, 10, "6.00");
+    assert!(db
+        .check_budget_before_forward("p1", "P1", "claude", &fp)
+        .is_err());
+}
+
+#[test]
+fn daily_period_excludes_previous_day_usage() {
+    let db = Database::memory().unwrap();
+    let fp = seed_limit(&db, "p1", true, "money", Some("USD"), "5");
+    let now = chrono::Utc::now().timestamp();
+    let today_start = ResetPeriod::Daily.current_period_start(now).unwrap();
+
+    // 窗口压回昨天，昨天用 $4.90、今天零点后用 $0.20
+    db.upsert_api_key_limit(&limit_row_with_period(
+        "p1",
+        &fp,
+        "daily",
+        today_start - 3_600,
+        "5",
+    ))
+    .unwrap();
+    insert_log(&db, "r-yday", "p1", &fp, today_start - 60, 10, 10, "4.90");
+    insert_log(&db, "r-today", "p1", &fp, today_start + 60, 10, 10, "0.20");
+
+    // 滚动后只计今天的 $0.20 < $5 → 放行，且窗口持久化到今天零点
+    assert!(db
+        .check_budget_before_forward("p1", "P1", "claude", &fp)
+        .is_ok());
+    let row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
+    assert_eq!(row.usage_start_at, today_start);
+
+    let status = db.get_budget_status("p1", "claude").unwrap();
+    assert_eq!(status.used_money_usd, "0.20");
+    assert_eq!(status.usage_start_at, Some(today_start));
+}
+
+#[test]
+fn weekly_and_monthly_periods_align_to_boundaries() {
+    let now = chrono::Utc::now().timestamp();
+
+    let db = Database::memory().unwrap();
+    let fp = seed_limit(&db, "p1", true, "money", Some("USD"), "5");
+    db.upsert_api_key_limit(&limit_row_with_period("p1", &fp, "weekly", 1_000_000, "5"))
+        .unwrap();
+    assert!(db
+        .check_budget_before_forward("p1", "P1", "claude", &fp)
+        .is_ok());
+    let row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
+    assert_eq!(
+        row.usage_start_at,
+        ResetPeriod::Weekly.current_period_start(now).unwrap()
+    );
+
+    let db = Database::memory().unwrap();
+    let fp = seed_limit(&db, "p2", true, "money", Some("USD"), "5");
+    db.upsert_api_key_limit(&limit_row_with_period("p2", &fp, "monthly", 1_000_000, "5"))
+        .unwrap();
+    assert!(db
+        .check_budget_before_forward("p2", "P2", "claude", &fp)
+        .is_ok());
+    let row = db.get_api_key_limit("p2", "claude").unwrap().unwrap();
+    assert_eq!(
+        row.usage_start_at,
+        ResetPeriod::Monthly.current_period_start(now).unwrap()
+    );
+}
+
+#[test]
+fn never_period_keeps_window_until_manual_reset() {
+    // 回归：never（V1.0 默认）语义不变——窗口压在过去时，历史超额持续拦截，
+    // 不因日历边界自动放行
+    let db = Database::memory().unwrap();
+    let fp = seed_limit(&db, "p1", true, "money", Some("USD"), "5");
+    db.upsert_api_key_limit(&limit_row_with_period("p1", &fp, "never", 1_000_000, "5"))
+        .unwrap();
+    insert_log(&db, "r-old", "p1", &fp, 1_000_100, 10, 10, "10.00");
+    assert!(db
+        .check_budget_before_forward("p1", "P1", "claude", &fp)
+        .is_err());
+
+    // 手动重置立即恢复（窗口推进到当下，历史行全部出窗）
+    db.reset_budget_usage("p1", "claude").unwrap();
+    assert!(db
+        .check_budget_before_forward("p1", "P1", "claude", &fp)
+        .is_ok());
+}
+
+#[test]
+fn save_persists_and_validates_reset_period() {
+    let db = Database::memory().unwrap();
+    db.save_provider("claude", &claude_provider("p1", "sk-test-period-save-key"))
+        .unwrap();
+
+    // 缺省 → never
+    let config = UsageLimitConfig {
+        enabled: true,
+        limit_type: "money".to_string(),
+        currency: Some("USD".to_string()),
+        limit_amount: Some("10".to_string()),
+        reset_period: None,
+    };
+    db.save_budget_config("p1", "claude", &config).unwrap();
+    let row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
+    assert_eq!(row.reset_period, "never");
+
+    // 合法周期入库，状态回带 next_reset_at
+    let config = UsageLimitConfig {
+        enabled: true,
+        limit_type: "money".to_string(),
+        currency: Some("USD".to_string()),
+        limit_amount: Some("10".to_string()),
+        reset_period: Some("weekly".to_string()),
+    };
+    let status = db.save_budget_config("p1", "claude", &config).unwrap();
+    assert_eq!(status.reset_period, "weekly");
+    assert!(status.next_reset_at.is_some());
+    let row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
+    assert_eq!(row.reset_period, "weekly");
+
+    // 非法周期拒绝入库，原配置不被破坏
+    let config = UsageLimitConfig {
+        enabled: true,
+        limit_type: "money".to_string(),
+        currency: Some("USD".to_string()),
+        limit_amount: Some("10".to_string()),
+        reset_period: Some("yearly".to_string()),
+    };
+    assert!(db.save_budget_config("p1", "claude", &config).is_err());
+    let row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
+    assert_eq!(row.reset_period, "weekly", "非法保存不得覆盖原配置");
+
+    // 改周期时窗口对齐到新周期边界：weekly → daily 即从今天零点起统计
+    let config = UsageLimitConfig {
+        enabled: true,
+        limit_type: "money".to_string(),
+        currency: Some("USD".to_string()),
+        limit_amount: Some("10".to_string()),
+        reset_period: Some("daily".to_string()),
+    };
+    db.save_budget_config("p1", "claude", &config).unwrap();
+    let row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
+    let now = chrono::Utc::now().timestamp();
+    // 保守语义：原窗口已在本周期内（晚于今天零点）则不回退，保持已统计的
+    // 本期用量；窗口早于边界时才对齐到边界（见各周期滚动用例）
+    let today_start = ResetPeriod::Daily.current_period_start(now).unwrap();
+    assert!(row.usage_start_at >= today_start);
+    assert_eq!(row.reset_period, "daily");
+}
+
+#[test]
+fn status_reports_period_and_next_reset() {
+    let db = Database::memory().unwrap();
+    let fp = seed_limit(&db, "p1", true, "money", Some("USD"), "5");
+    let now = chrono::Utc::now().timestamp();
+    let today_start = ResetPeriod::Daily.current_period_start(now).unwrap();
+
+    db.upsert_api_key_limit(&limit_row_with_period(
+        "p1",
+        &fp,
+        "daily",
+        today_start - 3_600,
+        "5",
+    ))
+    .unwrap();
+    insert_log(&db, "r-yday", "p1", &fp, today_start - 60, 10, 10, "4.90");
+    insert_log(&db, "r-today", "p1", &fp, today_start + 60, 10, 10, "1.00");
+
+    let status = db.get_budget_status("p1", "claude").unwrap();
+    assert_eq!(status.reset_period, "daily");
+    // 有效窗口 = 今天零点（懒滚动，读接口无副作用）
+    assert_eq!(status.usage_start_at, Some(today_start));
+    // 只计今天窗口内的 $1.00；昨天的 $4.90 出窗
+    assert_eq!(status.used_money_usd, "1.00");
+    assert_eq!(status.state, "active");
+    // 下次重置 = 明天零点
+    assert_eq!(
+        status.next_reset_at,
+        Some(ResetPeriod::Daily.next_period_start(now).unwrap())
+    );
+}
+
+#[test]
+fn unknown_stored_period_is_treated_as_never() {
+    // 历史脏数据 / 手工改库：未知周期值按 never 兜底（告警），服务不拒绝
+    let db = Database::memory().unwrap();
+    let fp = seed_limit(&db, "p1", true, "money", Some("USD"), "5");
+    db.upsert_api_key_limit(&limit_row_with_period("p1", &fp, "bogus", 1_000_000, "5"))
+        .unwrap();
+    insert_log(&db, "r-old", "p1", &fp, 1_000_100, 10, 10, "10.00");
+
+    // never 语义：旧超额持续拦截，不自动放行
+    assert!(db
+        .check_budget_before_forward("p1", "P1", "claude", &fp)
+        .is_err());
+
+    let status = db.get_budget_status("p1", "claude").unwrap();
+    assert_eq!(status.reset_period, "never");
+    assert_eq!(status.next_reset_at, None);
+}
+
+#[test]
+fn manual_reset_coexists_with_period_rollover() {
+    let db = Database::memory().unwrap();
+    let fp = seed_limit(&db, "p1", true, "money", Some("USD"), "5");
+    let now = chrono::Utc::now().timestamp();
+    let today_start = ResetPeriod::Daily.current_period_start(now).unwrap();
+
+    // 窗口已在今天零点：今天窗口内 $10 → 超额拦截
+    db.upsert_api_key_limit(&limit_row_with_period("p1", &fp, "daily", today_start, "5"))
+        .unwrap();
+    insert_log(&db, "r1", "p1", &fp, today_start + 60, 10, 10, "10.00");
+    assert!(db
+        .check_budget_before_forward("p1", "P1", "claude", &fp)
+        .is_err());
+
+    // 手动重置：窗口推进到当下，窗口内的历史行全部出窗 → 恢复；
+    // daily 周期继续有效（下个零点仍会滚动）
+    db.reset_budget_usage("p1", "claude").unwrap();
+    assert!(db
+        .check_budget_before_forward("p1", "P1", "claude", &fp)
+        .is_ok());
+    let row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
+    assert_eq!(row.reset_period, "daily");
+    assert!(row.usage_start_at >= today_start + 60);
+}
+
+#[test]
+fn fresh_schema_has_reset_period_default() {
+    // 全新建表路径：新插入行不指定 reset_period 时默认 never
+    let db = Database::memory().unwrap();
+    db.save_provider("claude", &claude_provider("p-fresh", "sk-test-fresh-key"))
+        .unwrap();
+    let conn = db.conn.lock().expect("test db lock");
+    conn.execute(
+        "INSERT INTO api_key_limits (
+            provider_id, app_type, credential_fingerprint, enabled, limit_type,
+            currency, limit_amount, usage_start_at, created_at, updated_at
+         ) VALUES ('p-fresh', 'claude', 'fp-fresh', 1, 'token', NULL, '1000', 0, 0, 0)",
+        [],
+    )
+    .unwrap();
+    let period: String = conn
+        .query_row(
+            "SELECT reset_period FROM api_key_limits WHERE provider_id = 'p-fresh'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(period, "never");
 }

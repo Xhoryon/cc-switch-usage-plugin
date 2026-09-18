@@ -5608,6 +5608,30 @@ mod tests {
         input: i64,
         output: i64,
     ) {
+        insert_budget_log_at(
+            db,
+            request_id,
+            provider_id,
+            fingerprint,
+            total_cost,
+            input,
+            output,
+            1_000_100,
+        );
+    }
+
+    /// 可指定 created_at 的记账行（周期重置测试需要把用量放进「昨天」窗口）
+    #[allow(clippy::too_many_arguments)]
+    fn insert_budget_log_at(
+        db: &Database,
+        request_id: &str,
+        provider_id: &str,
+        fingerprint: &str,
+        total_cost: &str,
+        input: i64,
+        output: i64,
+        created_at: i64,
+    ) {
         let conn = db.conn.lock().expect("test db lock");
         conn.execute(
             "INSERT INTO proxy_request_logs (
@@ -5622,7 +5646,7 @@ mod tests {
                 input,
                 output,
                 total_cost,
-                1_000_100,
+                created_at,
                 fingerprint
             ],
         )
@@ -5648,6 +5672,7 @@ mod tests {
                 limit_type: "token".to_string(),
                 currency: None,
                 limit_amount: Some("1000".to_string()),
+                reset_period: None,
             },
         )
         .expect("save limit");
@@ -5700,6 +5725,7 @@ mod tests {
                 limit_type: "money".to_string(),
                 currency: Some("USD".to_string()),
                 limit_amount: Some("1".to_string()),
+                reset_period: None,
             },
         )
         .expect("save limit");
@@ -5766,6 +5792,7 @@ mod tests {
                 limit_type: "money".to_string(),
                 currency: Some("USD".to_string()),
                 limit_amount: Some("0.01".to_string()),
+                reset_period: None,
             },
         )
         .expect("save limit");
@@ -5774,6 +5801,78 @@ mod tests {
         assert!(db
             .check_budget_before_forward("budget-p4", &provider.name, "claude", &fingerprint)
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn budget_recovers_after_period_boundary_rollover() {
+        // V1.0.1：daily 周期 + 昨天已用 $10 ≥ $5 限额 → guard 懒滚动窗口到
+        // 今天零点后，旧周期用量出窗，请求恢复放行（先滚动、后判定）
+        let fwd = test_forwarder(Duration::ZERO, Duration::ZERO);
+        let db = fwd.router.db().clone();
+        let provider = budget_test_provider(&db, "budget-p5");
+        let fingerprint = crate::services::usage_limit::credential_fingerprint(
+            "sk-test-budget-budget-p5-0123456789",
+        );
+
+        db.save_budget_config(
+            "budget-p5",
+            "claude",
+            &crate::services::usage_limit::UsageLimitConfig {
+                enabled: true,
+                limit_type: "money".to_string(),
+                currency: Some("USD".to_string()),
+                limit_amount: Some("5".to_string()),
+                reset_period: Some("daily".to_string()),
+            },
+        )
+        .expect("save limit");
+
+        let now = chrono::Utc::now().timestamp();
+        let today_start = crate::services::usage_limit::ResetPeriod::Daily
+            .current_period_start(now)
+            .expect("daily boundary");
+        // save_budget_config 已把窗口对齐到今天零点；手动压回昨天以模拟
+        // 「跨过边界但尚未滚动」的状态，验证 guard 的懒滚动路径
+        db.reset_api_key_limit_window("budget-p5", "claude", today_start - 86_400)
+            .expect("reset window to yesterday");
+        insert_budget_log_at(
+            &db,
+            "r-old",
+            "budget-p5",
+            &fingerprint,
+            "10.00",
+            10,
+            10,
+            today_start - 3_600,
+        );
+
+        // 昨天的 $10 出窗 → 放行，且窗口已持久化滚动到今天零点
+        assert!(db
+            .check_budget_before_forward("budget-p5", &provider.name, "claude", &fingerprint)
+            .is_ok());
+        let row = db
+            .get_api_key_limit("budget-p5", "claude")
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.usage_start_at, today_start, "窗口必须已滚动到今天零点");
+        assert_eq!(row.reset_period, "daily");
+
+        // 对照：今天窗口内的 $10 仍然会被拦截（滚动只放行旧周期用量）
+        db.reset_api_key_limit_window("budget-p5", "claude", today_start)
+            .expect("reset window to today");
+        insert_budget_log_at(
+            &db,
+            "r-today",
+            "budget-p5",
+            &fingerprint,
+            "10.00",
+            10,
+            10,
+            today_start + 60,
+        );
+        assert!(db
+            .check_budget_before_forward("budget-p5", &provider.name, "claude", &fingerprint)
+            .is_err());
     }
 
     #[test]

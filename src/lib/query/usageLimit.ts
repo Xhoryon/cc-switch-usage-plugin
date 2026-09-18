@@ -1,14 +1,16 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { usageLimitApi } from "@/lib/api/usageLimit";
 import type { AppId } from "@/lib/api/types";
-import type { UsageLimitConfig } from "@/types/usageLimit";
+import type { UsageLimitConfig, UsageLimitCurrency } from "@/types/usageLimit";
 
 /** Query keys（独立命名空间，避免与 Usage Dashboard 的轮询互相牵连） */
 export const usageLimitKeys = {
   all: ["usage-limit"] as const,
   status: (providerId: string, appType: string) =>
     [...usageLimitKeys.all, "status", providerId, appType] as const,
-  exchangeRate: () => [...usageLimitKeys.all, "usd-cny-rate"] as const,
+  /** 本地 USD → 币种汇率（按币种分键） */
+  exchangeRate: (currency: UsageLimitCurrency) =>
+    [...usageLimitKeys.all, "exchange-rate", currency] as const,
 };
 
 /**
@@ -27,11 +29,11 @@ export function useUsageLimitStatus(providerId: string, appType: AppId) {
   });
 }
 
-/** 本地 USD → CNY 汇率 */
-export function useUsdCnyRate() {
+/** 本地 USD → 指定币种汇率（未配置返回默认值；USD 返回 "1"） */
+export function useExchangeRate(currency: UsageLimitCurrency) {
   return useQuery({
-    queryKey: usageLimitKeys.exchangeRate(),
-    queryFn: usageLimitApi.getUsdCnyRate,
+    queryKey: usageLimitKeys.exchangeRate(currency),
+    queryFn: () => usageLimitApi.getExchangeRate(currency),
     staleTime: 60_000,
   });
 }
@@ -64,16 +66,19 @@ export function useResetUsageLimit(providerId: string, appType: AppId) {
   });
 }
 
-/** 保存本地汇率 */
-export function useSetUsdCnyRate() {
+/** 保存本地汇率（USD → 指定币种） */
+export function useSetExchangeRate() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (rate: string) => usageLimitApi.setUsdCnyRate(rate),
+    mutationFn: ({
+      currency,
+      rate,
+    }: {
+      currency: UsageLimitCurrency;
+      rate: string;
+    }) => usageLimitApi.setExchangeRate(currency, rate),
     onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: usageLimitKeys.exchangeRate(),
-      });
-      // 已换算的 CNY 用量展示依赖汇率，一并刷新
+      // 已换算的非 USD 用量展示依赖汇率，全部币种 + 状态一并刷新
       void queryClient.invalidateQueries({ queryKey: usageLimitKeys.all });
     },
   });

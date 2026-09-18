@@ -19,6 +19,7 @@ vi.mock("react-i18next", () => ({
       }
       return key;
     },
+    i18n: { language: "en" },
   }),
 }));
 
@@ -31,7 +32,8 @@ const resetMutate = vi.fn();
 const setRateMutate = vi.fn();
 
 let mockStatus: UsageLimitStatus | undefined;
-let mockRate = "7.2";
+// undefined 模拟「该币种汇率尚未加载完成」（P1-1 竞态用例）
+let mockRate: string | undefined = "7.2";
 let savePending = false;
 let saveError: Error | null = null;
 
@@ -41,7 +43,7 @@ vi.mock("@/lib/query/usageLimit", () => ({
     status: (p: string, a: string) => ["usage-limit", "status", p, a],
   },
   useUsageLimitStatus: () => ({ data: mockStatus }),
-  useUsdCnyRate: () => ({ data: mockRate }),
+  useExchangeRate: () => ({ data: mockRate }),
   useSaveUsageLimit: () => ({
     mutate: (
       config: unknown,
@@ -69,8 +71,9 @@ vi.mock("@/lib/query/usageLimit", () => ({
     },
     isPending: false,
   }),
-  useSetUsdCnyRate: () => ({
-    mutate: (rate: string) => setRateMutate(rate),
+  useSetExchangeRate: () => ({
+    mutate: (vars: { currency: string; rate: string }) =>
+      setRateMutate(vars),
     isPending: false,
   }),
 }));
@@ -92,6 +95,8 @@ function baseStatus(
     currency: null,
     limitAmount: null,
     usageStartAt: null,
+    resetPeriod: null,
+    nextResetAt: null,
     usedMoneyUsd: "0",
     usedMoneyInCurrency: null,
     usedTokens: 0,
@@ -194,6 +199,103 @@ describe("UsageLimitDialog", () => {
     expect(screen.queryByLabelText("usageLimit.exchangeRate")).toBeNull();
   });
 
+  it("renders all five supported currencies", () => {
+    renderDialog(baseStatus());
+    fireEvent.click(screen.getByTestId("usage-limit-toggle"));
+    for (const key of [
+      "usageLimit.usd",
+      "usageLimit.cny",
+      "usageLimit.eur",
+      "usageLimit.jpy",
+      "usageLimit.gbp",
+    ]) {
+      expect(screen.getByRole("button", { name: key })).toBeTruthy();
+    }
+  });
+
+  it("EUR mode: shows the rate input, converts usage and shows € suffix", () => {
+    mockRate = "0.92";
+    renderDialog(
+      baseStatus({
+        enabled: true,
+        limitType: "money",
+        currency: "EUR",
+        limitAmount: "9.2",
+        usedMoneyUsd: "2.41",
+      }),
+    );
+    expect(screen.getByLabelText("usageLimit.exchangeRate")).toBeTruthy();
+    // 2.41 × 0.92 = 2.2172 → €2.22
+    expect(screen.getByText("€2.22")).toBeTruthy();
+    expect(screen.getByTestId("usage-limit-currency-symbol").textContent).toBe(
+      "€",
+    );
+  });
+
+  it("saving a EUR limit persists the EUR exchange rate", () => {
+    mockRate = "0.92";
+    renderDialog(baseStatus());
+    fireEvent.click(screen.getByTestId("usage-limit-toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "usageLimit.eur" }));
+    fireEvent.change(screen.getByTestId("usage-limit-amount"), {
+      target: { value: "10" },
+    });
+    fireEvent.click(screen.getByTestId("usage-limit-save"));
+    expect(saveMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ currency: "EUR", resetPeriod: "never" }),
+    );
+    expect(setRateMutate).toHaveBeenCalledWith({ currency: "EUR", rate: "0.92" });
+  });
+
+  it("switching currency re-reads that currency's saved rate", () => {
+    // 审查 P1-1：切换币种后旧币种汇率不得残留（含手改过的汇率）
+    renderDialog(baseStatus());
+    fireEvent.click(screen.getByTestId("usage-limit-toggle"));
+    fireEvent.click(screen.getByRole("button", { name: "usageLimit.cny" }));
+    expect(screen.getByTestId("usage-limit-rate")).toHaveValue("7.2");
+
+    // 手改汇率后切换：touchedRate 重置，新币种汇率回填
+    fireEvent.change(screen.getByTestId("usage-limit-rate"), {
+      target: { value: "9.9" },
+    });
+    mockRate = "0.92";
+    fireEvent.click(screen.getByRole("button", { name: "usageLimit.eur" }));
+    expect(screen.getByTestId("usage-limit-rate")).toHaveValue("0.92");
+  });
+
+  it("blocks saving while the new currency's rate has not loaded", () => {
+    // 审查 P1-1：汇率未返回（mockRate undefined）时输入框为空，
+    // 此时保存必须被校验拦截，而不是把空/旧值持久化
+    mockRate = undefined;
+    renderDialog(
+      baseStatus({
+        enabled: true,
+        limitType: "money",
+        currency: "USD",
+        limitAmount: "10",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "usageLimit.jpy" }));
+    expect(screen.getByTestId("usage-limit-rate")).toHaveValue("");
+    fireEvent.click(screen.getByTestId("usage-limit-save"));
+    expect(screen.getByTestId("usage-limit-error")).toBeTruthy();
+    expect(saveMutate).not.toHaveBeenCalled();
+    expect(setRateMutate).not.toHaveBeenCalled();
+  });
+
+  it("USD mode never asks for an exchange rate and never mutates one", () => {
+    renderDialog(baseStatus());
+    fireEvent.click(screen.getByTestId("usage-limit-toggle"));
+    fireEvent.change(screen.getByTestId("usage-limit-amount"), {
+      target: { value: "10" },
+    });
+    fireEvent.click(screen.getByTestId("usage-limit-save"));
+    expect(setRateMutate).not.toHaveBeenCalled();
+    expect(saveMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ currency: "USD" }),
+    );
+  });
+
   it("token mode shows the token input and token usage", () => {
     renderDialog(
       baseStatus({
@@ -242,7 +344,90 @@ describe("UsageLimitDialog", () => {
       limitType: "money",
       currency: "USD",
       limitAmount: "100.00",
+      resetPeriod: "never",
     });
+  });
+
+  it("renders the reset period selector with never as default", () => {
+    renderDialog(baseStatus());
+    fireEvent.click(screen.getByTestId("usage-limit-toggle"));
+    const selector = screen.getByTestId("usage-limit-reset-period");
+    expect(selector).toBeTruthy();
+    // 五个周期选项齐备
+    for (const key of [
+      "usageLimit.resetNever",
+      "usageLimit.resetHourly",
+      "usageLimit.resetDaily",
+      "usageLimit.resetWeekly",
+      "usageLimit.resetMonthly",
+    ]) {
+      expect(
+        screen.getByRole("button", { name: key }),
+      ).toBeTruthy();
+    }
+    // 默认不重置：显示 hint，不显示下次重置
+    expect(screen.getByText("usageLimit.resetPeriodHint")).toBeTruthy();
+    expect(screen.queryByTestId("usage-limit-next-reset")).toBeNull();
+  });
+
+  it("saves the selected reset period with the config", () => {
+    renderDialog(baseStatus());
+    fireEvent.click(screen.getByTestId("usage-limit-toggle"));
+    fireEvent.change(screen.getByTestId("usage-limit-amount"), {
+      target: { value: "10" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "usageLimit.resetWeekly" }),
+    );
+    expect(screen.queryByText("usageLimit.resetPeriodHint")).toBeNull();
+    fireEvent.click(screen.getByTestId("usage-limit-save"));
+    expect(saveMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ resetPeriod: "weekly" }),
+    );
+  });
+
+  it("shows the next reset time for the saved periodic schedule", () => {
+    // status.enabled=true → Dialog 打开即展开配置，无需再点 toggle
+    renderDialog(
+      baseStatus({
+        enabled: true,
+        limitType: "money",
+        currency: "USD",
+        limitAmount: "10",
+        resetPeriod: "daily",
+        nextResetAt: 1758412800,
+      }),
+    );
+    // 初始化与已保存周期一致 → 展示下次重置
+    expect(screen.getByTestId("usage-limit-next-reset")).toBeTruthy();
+    expect(screen.getByText("usageLimit.nextResetAt")).toBeTruthy();
+    // 切到别的周期（尚未保存）→ 不展示过期边界
+    fireEvent.click(
+      screen.getByRole("button", { name: "usageLimit.resetMonthly" }),
+    );
+    expect(screen.queryByTestId("usage-limit-next-reset")).toBeNull();
+  });
+
+  it("keeps the saved reset period when reopening the dialog", () => {
+    renderDialog(
+      baseStatus({
+        enabled: true,
+        limitType: "token",
+        limitAmount: "5000000",
+        resetPeriod: "hourly",
+      }),
+    );
+    // hourly 选项处于选中态（aria-pressed）
+    expect(
+      screen
+        .getByRole("button", { name: "usageLimit.resetHourly" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(
+      screen
+        .getByRole("button", { name: "usageLimit.resetNever" })
+        .getAttribute("aria-pressed"),
+    ).toBe("false");
   });
 
   it("shows an understandable error when the API rejects the save", () => {

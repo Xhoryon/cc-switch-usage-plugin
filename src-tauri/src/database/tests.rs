@@ -1261,3 +1261,189 @@ fn ensure_incremental_auto_vacuum_rebuilds_existing_file_db() {
         "file db should persist INCREMENTAL auto_vacuum after VACUUM rebuild"
     );
 }
+
+#[test]
+fn migration_v21_to_v22_rebuilds_limits_without_currency_check() {
+    let conn = Connection::open_in_memory().expect("open memory db");
+
+    // 模拟 v21 形状的限额表（currency 带 USD/CNY CHECK）+ 一行存量配置
+    conn.execute_batch(
+        r#"
+        CREATE TABLE providers (
+            id TEXT NOT NULL,
+            app_type TEXT NOT NULL,
+            PRIMARY KEY (id, app_type)
+        );
+        CREATE TABLE api_key_limits (
+            provider_id TEXT NOT NULL,
+            app_type TEXT NOT NULL,
+            credential_fingerprint TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            limit_type TEXT NOT NULL CHECK (limit_type IN ('money', 'token')),
+            currency TEXT CHECK (currency IN ('USD', 'CNY')),
+            limit_amount TEXT NOT NULL,
+            usage_start_at INTEGER NOT NULL,
+            reset_period TEXT NOT NULL DEFAULT 'never',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (provider_id, app_type),
+            FOREIGN KEY (provider_id, app_type) REFERENCES providers(id, app_type) ON DELETE CASCADE
+        );
+        INSERT INTO providers (id, app_type) VALUES ('p1', 'claude');
+        INSERT INTO api_key_limits (
+            provider_id, app_type, credential_fingerprint, enabled, limit_type,
+            currency, limit_amount, usage_start_at, reset_period, created_at, updated_at
+        ) VALUES ('p1', 'claude', 'fp1', 1, 'money', 'CNY', '50', 1000, 'daily', 1000, 1000);
+        "#,
+    )
+    .expect("seed v21 limits table");
+
+    Database::set_user_version(&conn, 21).expect("set user_version=21");
+    Database::apply_schema_migrations_on_conn(&conn).expect("apply migrations");
+
+    // 存量配置完整保留（含 V1.0.1 的 reset_period）
+    let (currency, period, amount): (String, String, String) = conn
+        .query_row(
+            "SELECT currency, reset_period, limit_amount FROM api_key_limits
+             WHERE provider_id = 'p1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("query migrated row");
+    assert_eq!(currency, "CNY");
+    assert_eq!(period, "daily");
+    assert_eq!(amount, "50");
+
+    // currency CHECK 已移除：EUR 可入库；limit_type CHECK 仍生效
+    conn.execute(
+        "INSERT INTO providers (id, app_type) VALUES ('p2', 'claude')",
+        [],
+    )
+    .expect("seed provider for EUR row");
+    conn.execute(
+        "INSERT INTO api_key_limits (
+            provider_id, app_type, credential_fingerprint, enabled, limit_type,
+            currency, limit_amount, usage_start_at, reset_period, created_at, updated_at
+         ) VALUES ('p2', 'claude', 'fp2', 1, 'money', 'EUR', '10', 1000, 'never', 1000, 1000)",
+        [],
+    )
+    .expect("EUR currency must be accepted after v22");
+    assert!(
+        conn.execute(
+            "INSERT INTO api_key_limits (
+                provider_id, app_type, credential_fingerprint, enabled, limit_type,
+                currency, limit_amount, usage_start_at, reset_period, created_at, updated_at
+             ) VALUES ('p3', 'claude', 'fp3', 1, 'bogus', 'USD', '10', 1000, 'never', 1000, 1000)",
+            [],
+        )
+        .is_err(),
+        "limit_type CHECK must be preserved"
+    );
+}
+
+#[test]
+fn migration_v21_to_v22_with_foreign_keys_on_preserves_data() {
+    // 审查 P1-2：生产 init 在 PRAGMA foreign_keys=ON 下执行 v22 重建
+    // （INSERT 逐行校验 providers、DROP 隐式 DELETE、RENAME 重写引用）。
+    // 该真实路径必须有端到端覆盖。
+    let conn = Connection::open_in_memory().expect("open memory db");
+    conn.execute("PRAGMA foreign_keys = ON;", [])
+        .expect("enable foreign keys");
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE providers (
+            id TEXT NOT NULL,
+            app_type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            settings_config TEXT NOT NULL,
+            meta TEXT NOT NULL DEFAULT '{}',
+            is_current BOOLEAN NOT NULL DEFAULT 0,
+            in_failover_queue BOOLEAN NOT NULL DEFAULT 0,
+            PRIMARY KEY (id, app_type)
+        );
+        CREATE TABLE api_key_limits (
+            provider_id TEXT NOT NULL,
+            app_type TEXT NOT NULL,
+            credential_fingerprint TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            limit_type TEXT NOT NULL CHECK (limit_type IN ('money', 'token')),
+            currency TEXT CHECK (currency IN ('USD', 'CNY')),
+            limit_amount TEXT NOT NULL,
+            usage_start_at INTEGER NOT NULL,
+            reset_period TEXT NOT NULL DEFAULT 'never',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (provider_id, app_type),
+            FOREIGN KEY (provider_id, app_type) REFERENCES providers(id, app_type) ON DELETE CASCADE
+        );
+        INSERT INTO providers (id, app_type, name, settings_config)
+            VALUES ('p1', 'claude', 'P1', '{}');
+        INSERT INTO api_key_limits (
+            provider_id, app_type, credential_fingerprint, enabled, limit_type,
+            currency, limit_amount, usage_start_at, reset_period, created_at, updated_at
+        ) VALUES ('p1', 'claude', 'fp1', 1, 'money', 'CNY', '50', 1000, 'weekly', 1000, 1000);
+        "#,
+    )
+    .expect("seed v21 limits table");
+
+    Database::set_user_version(&conn, 21).expect("set user_version=21");
+    Database::apply_schema_migrations_on_conn(&conn).expect("apply migrations under FK=ON");
+
+    // 数据完整 + FK 链健康
+    let (currency, period): (String, String) = conn
+        .query_row(
+            "SELECT currency, reset_period FROM api_key_limits WHERE provider_id = 'p1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("query migrated row");
+    assert_eq!((currency.as_str(), period.as_str()), ("CNY", "weekly"));
+
+    let mut fk_check_stmt = conn
+        .prepare("PRAGMA foreign_key_check")
+        .expect("prepare foreign_key_check");
+    let mut fk_rows = fk_check_stmt.query([]).expect("run foreign_key_check");
+    let mut fk_violations = 0_i64;
+    while fk_rows.next().expect("iterate foreign_key_check").is_some() {
+        fk_violations += 1;
+    }
+    assert_eq!(fk_violations, 0, "FK=ON 重建后不得有孤儿行");
+
+    // 新表仍带 → providers 的 FK：孤儿行必须被拒绝
+    assert!(
+        conn.execute(
+            "INSERT INTO api_key_limits (
+                provider_id, app_type, credential_fingerprint, enabled, limit_type,
+                currency, limit_amount, usage_start_at, reset_period, created_at, updated_at
+             ) VALUES ('ghost', 'claude', 'fp', 1, 'money', 'EUR', '1', 0, 'never', 0, 0)",
+            [],
+        )
+        .is_err(),
+        "rebuild must keep the FK to providers"
+    );
+}
+
+#[test]
+fn fresh_limits_table_accepts_all_currencies_without_check() {
+    // 全新建表路径：currency 无 CHECK，5 币种均可入库
+    let conn = Connection::open_in_memory().expect("open memory db");
+    Database::create_tables_on_conn(&conn).expect("create tables");
+
+    for currency in ["USD", "CNY", "EUR", "JPY", "GBP"] {
+        conn.execute(
+            "INSERT INTO providers (id, app_type, name, settings_config)
+             VALUES (?1, 'claude', ?1, '{}')",
+            rusqlite::params![format!("p-{currency}")],
+        )
+        .expect("seed provider for limits row");
+        conn.execute(
+            "INSERT INTO api_key_limits (
+                provider_id, app_type, credential_fingerprint, enabled, limit_type,
+                currency, limit_amount, usage_start_at, reset_period, created_at, updated_at
+             ) VALUES (?1, 'claude', 'fp', 1, 'money', ?2, '10', 0, 'never', 0, 0)",
+            rusqlite::params![format!("p-{currency}"), currency],
+        )
+        .expect("all supported currencies must be accepted");
+    }
+}

@@ -1,4 +1,280 @@
-# 开发日志
+# 开发日志 / Development Log
+
+> 语言说明 / Languages：本日志为追加式工程历史，以简体中文维护（不翻译
+> 历史条目）。配套的《使用限额知识库》提供四种语言版本：
+> [简体中文](usage-limit-knowledge-base-zh.md) |
+> [English](usage-limit-knowledge-base-en.md) |
+> [繁體中文](usage-limit-knowledge-base-zh-TW.md) |
+> [日本語](usage-limit-knowledge-base-ja.md)。
+> This append-only engineering log is maintained in Simplified Chinese; the
+> companion Usage Limit knowledge base is available in four languages above.
+>
+> 版本映射 / Version mapping：内部迭代 V1.0 / V1.0.1 / V1.0.2（2026-09-17/18）
+> 合并以 **V1.1.0**（基座 CC Switch 3.20.3）公开发布。/ Internal iterations
+> V1.0 / V1.0.1 / V1.0.2 shipped publicly as **V1.1.0**.
+
+## 2026-09-18 — V1.0.2 多币种限额 / Multi-Currency Budget
+
+### Feature
+
+在 V1.0.1 重置周期之上，金额限额从 USD/CNY 扩展到 **5 种主流货币**：
+
+- **USD / CNY / EUR / JPY / GBP**，USD 为内部计价基准（`total_cost_usd`），
+  其余币种限额按 **USD→X 本地汇率**换算
+- 每个币种的汇率均可**人工调节**（Dialog 内输入，随保存持久化），提供合理
+  默认值（CNY 7.2 / EUR 0.92 / JPY 150 / GBP 0.79），**不联网获取**
+- CNY 沿用 V1.0 的 settings 键 `usage_limit_usd_cny_rate`，升级不丢已配汇率；
+  新增 `usage_limit_usd_eur_rate` / `usage_limit_usd_jpy_rate` /
+  `usage_limit_usd_gbp_rate`
+- 命令泛化：`get_usd_cny_rate` / `set_usd_cny_rate` →
+  `get_exchange_rate(currency)` / `set_exchange_rate(currency, rate)`
+- UI：币种五段选择器（带符号）、非 USD 币种显示汇率输入（标签按币种参数化
+  「USD → EUR 汇率」）、金额输入框内嵌币种符号后缀（右对齐 muted 小字）
+- JPY 与 CNY 同用 ¥ 字形，展示与错误消息中 JPY 加国别前缀 `JP¥` 消歧
+
+### Architecture decision
+
+- **换算方向统一为「除以汇率折回 USD」**：`limit_in_usd = amount / rate`、
+  `used_in_currency = used_usd × rate`。USD 汇率恒为 1（`get_exchange_rate`
+  对 USD 直接返回 ONE，不访问 settings），金额判定只有一条代码路径，杜绝
+  「USD 分支 / CNY 分支」式重复逻辑在多币种下的组合爆炸。
+- **币种值域完全下沉到应用层**：`LimitCurrency::parse` 在保存路径校验，
+  读取侧未知值回退 USD（`unwrap_or(LimitCurrency::Usd)`，与 reset_period /
+  汇率的防御思路一致）。
+- **切换币种 = 切换汇率来源**：前端汇率按币种分 TanStack Query 键
+  （`["usage-limit","exchange-rate",currency]`），Dialog 内 `touchedRate`
+  独立于其他配置——用户切币种即放弃未保存的手改汇率并回填该币种已存值，
+  避免「CNY 的汇率误填进 EUR」。
+- **跨币种查看用量**：`usedMoneyInCurrency` 只在「已保存限额币种 == 当前
+  所选币种」时信任；切换中 / 未保存时按本地汇率输入实时估算（修复了 V1.0
+  隐含的「仅 CNY 特判」写法，泛化为任意币种）。
+
+### Database changes
+
+- `SCHEMA_VERSION` 21 → 22，`migrate_v21_to_v22`：**重建 `api_key_limits`
+  移除 currency 的 CHECK 约束**（SQLite 无法修改既有 CHECK，标准四步：
+  建新表 → INSERT SELECT 拷贝 → DROP 旧表 → RENAME）。存量数据
+  （含 V1.0.1 的 reset_period）完整保留。
+- 幂等性：读取 `sqlite_master.sql` 判断建表语句是否仍含
+  `CHECK (currency`，无则跳过；全新 DDL 已无该约束，天然命中跳过。
+- `limit_type` 的 CHECK 保留（值域稳定）；currency 值域自此完全由应用层
+  保证，**后续扩展币种不再需要迁移**。
+- FK（providers 级联删除）在重建后原样保留。
+
+### Backend / Frontend changes
+
+- `services/usage_limit.rs`：`LimitCurrency` 扩展（as_str/parse/symbol/
+  rate_setting_key/default_exchange_rate）、`get_exchange_rate` /
+  `set_exchange_rate`（USD 拒绝设置）、`parse_exchange_rate` 按币种回退默认
+- `commands/usage_limit.rs` + `lib.rs`：两个汇率命令签名泛化
+- `types/usageLimit.ts`：currency 联合类型扩展 + 导出
+  `USAGE_LIMIT_CURRENCY_SYMBOLS`（与后端 `symbol()` 一致）
+- `lib/api/usageLimit.ts` / `lib/query/usageLimit.ts`：
+  `getExchangeRate` / `setExchangeRate`、`useExchangeRate(currency)` /
+  `useSetExchangeRate`（成功后 invalidate 整个 usage-limit 命名空间，
+  已换算用量展示同步刷新）
+- `UsageLimitDialog.tsx`：五币种选择器、汇率输入条件改为 `currency !== "USD"`、
+  金额输入符号后缀（`pr-10` + 右侧绝对定位 muted 小字）、`touchedRate`
+  状态（切币种重置）
+- `UsageLimitButton.tsx`：`formatMoney` 用符号表；`budgetSummary` 去除
+  USD/CNY 钳制，改用实际币种（tooltip 简略用量对 5 币种正确）
+- 清理：`touchedConfig` 状态在汇率回填改用 `touchedRate` 后已无读取方，
+  连同全部写入一并移除
+
+### Tests
+
+- Rust（usage_limit 36 → 41，迁移测试 +3）：
+  `multi_currency_rates_are_independent_with_defaults`（默认值/互不干扰/
+  USD 恒 1 且拒设/负汇率拒绝）、`eur_and_jpy_limits_convert_correctly`
+  （EUR 达到拒绝含 € 符号与 detail.currency、JPY 快速通道与状态换算
+  99×150=14850、GBP 两步临界）、`save_accepts_all_supported_currencies_only`
+  （5 币种可存、RUB 拒绝）、`migration_v21_to_v22_rebuilds_limits_without_
+  currency_check`（v21 形状种子 → 数据保留/EUR 可入/limit_type CHECK 仍在）、
+  `fresh_limits_table_accepts_all_currencies_without_check`、
+  `migration_v21_to_v22_with_foreign_keys_on_preserves_data`（FK=ON 生产路径
+  端到端：数据保留 + foreign_key_check 零违规 + 新表仍拒孤儿行）、
+  `custom_rate_end_to_end_changes_guard_threshold`（非默认汇率 EUR=0.46 →
+  €0.92 限额在 $2 精确拦截，防键名脱节）、
+  `corrupt_stored_rate_falls_back_to_default`（settings 脏值回退默认）
+- 前端（25 → 31）：渲染五币种、EUR 汇率输入 + 换算展示（2.41×0.92=€2.22）+
+  符号后缀、EUR 保存持久化汇率（mutation 载荷 `{currency, rate}`）、
+  USD 模式不出现也不修改汇率、切换币种按该币种已存汇率回填（含手改后
+  切换重置）、汇率未加载完成时保存被拦截（P1-1 竞态回归）
+
+### 审核返场（2026-09-18，独立代码审查）
+
+第一轮审查（P0×0 / P1×3 / P2×7）→ 全部修复 → 全量复验全绿：
+
+- **P1-1（真实竞态，必修）**：Dialog 切换到汇率尚未加载完成的币种时，
+  上一币种汇率残留在输入框，点保存会把错误汇率持久化（如 CNY 7.2 存成
+  JPY 汇率 → 实际阈值放大约 20 倍）。修复：切币种立即清空 `rateInput`
+  并重置 `touchedRate`；回填 effect 依赖加入 `currency`（缓存同值也触发）；
+  汇率为空时保存被校验拦截。补两个前端回归用例。
+- **P1-2**：v22 重建此前只在 FK=OFF 的测试连接里覆盖。新增 FK=ON 端到端
+  用例（镜像 `Database::init` 真实路径）：数据保留、`foreign_key_check`
+  零违规、重建后新表仍拒绝孤儿行。
+- **P1-3**：新增非默认汇率端到端用例（EUR=0.46 → €0.92 在 $2 精确拦截），
+  防止「汇率读写键名脱节但单测全绿」的失效模式。
+- P2 修复：快速通道 margin 由绝对 1e-6 改为 `max(1e-6, limit×1e-12)`
+  （大限额下绝对边距不足以覆盖 f64 累积误差）；前端汇率校验补上限
+  1,000,000（与后端一致，避免「config 已存、汇率被拒」半保存）；Dialog
+  初始化 effect 加 `wasOpenRef` 防打开期间后台 refetch 打断用户编辑；
+  脏汇率回退默认值补测试；两处 `"USD" | "CNY"` 过期注释更新为五币种。
+- P2 采纳说明：`sqlite_master` 文本匹配的幂等判断保留（本仓库全部 DDL
+  措辞受控，且任何 DDL 变更都会 bump 版本）；providers 缺表守卫保留
+  （仅极简夹具可达，真实库由 create_tables_on_conn 保证）。
+
+### Known limitations
+
+- 汇率为本地静态值：不联网、不自动跟踪市场波动；跨币种比较请以 USD 原值
+  （`usedMoneyUsd`）为准。
+- JPY 展示符号 `JP¥` 与 CNY 的 `¥` 在 UI 中并存（宽度不同属预期）。
+- 其余边界同 V1.0 / V1.0.1（仅本机代理流量、设计内 overshoot、OAuth 不支持
+  按 Key 限额、配置不参与云同步）。
+
+### Verification
+
+2026-09-18（同 V1.0.1 工具链说明：本机 stable 1.97.1；`proxy::server::tests`
+/ `hyper_client` 网络型测试在本环境挂起为既有环境限制，模块级跳过）：
+
+| 检查 | 结果 |
+| --- | --- |
+| `pnpm typecheck` / `format:check` | PASS |
+| `pnpm test:unit` | PASS（1151 tests，含新增 6 个多币种/竞态用例） |
+| `cargo fmt --check` | PASS |
+| `cargo clippy --all-targets` | 本次改动文件 0 警告 |
+| `cargo build --release` | PASS |
+| `cargo test --lib`（跳过网络型模块） | **PASS：2925 passed / 0 failed** |
+| 定向回归 | usage_limit 41、migration（含 v22 × 3）全过 |
+
+以上为审核返场修复后的最终复验结果（第一轮验证为 2922/1149，返场新增
+5 个测试后全绿）。
+
+---
+
+## 2026-09-18 — V1.0.1 使用限额重置周期 / Reset Schedule
+
+### Feature
+
+在 V1.0 限额功能（2026-09-17）之上，为每个 API Key 的统计窗口增加可选的
+**自动重置周期**：
+
+- 五种选择：**不重置**（V1.0 默认，仅手动重置）/ **每小时** / **每天** /
+  **每周**（周一起算）/ **每月**（每月 1 日起算）
+- 周期边界按**本地时区**计算：每天 = 本地零点、每周 = 本地周一零点、
+  每月 = 本地 1 日零点、每小时 = 本地整点
+- Dialog 在限额配置区内新增「重置周期」五段选择器；周期生效时展示
+  「下次重置：<本地时间>」
+- 达到限额的窗口跨过周期边界后**自动恢复**，无需用户手动干预
+- i18n：zh / zh-TW / en / ja 各新增 8 个 key（usageLimit 命名空间 28 → 36）
+
+### Architecture decision
+
+**懒滚动（lazy rollover）**：不引入后台定时器。窗口起点
+`usage_start_at` 保持「上次对齐的时间戳」，判定与状态查询时按当前时间
+即时计算有效起点：
+
+```
+effective_start = max(usage_start_at, 当前周期边界(reset_period, now))
+```
+
+- `check_budget_before_forward`：**先滚动、后判定**。边界已越过 → 推进
+  `usage_start_at`（持久化，best-effort，失败仅告警）→ 用新起点聚合判定。
+  因此「昨天用满、今天零点已过」的请求在同一次 guard 调用内被放行。
+- `get_budget_status`：按相同规则即时计算有效起点并返回
+  `resetPeriod` / `nextResetAt`，但**读接口无副作用**（不回写持久化窗口）。
+- `save_budget_config`：保存时校验周期值域；若原窗口早于新周期边界
+  （如从 never 改为 daily 且窗口已在昨天）则立即对齐到边界。原窗口已在
+  本周期内时不回退——保守保留本期已统计的用量（与手动重置「从当下起算」
+  的语义一致）。
+- 与 credential 轮换的叠加：重绑后窗口起点是「当下」，周期边界不可能
+  早于它，因此轮换与滚动不会互相破坏（旧 Key 用量依旧不继承）。
+
+选择懒滚动而非定时器的理由：应用关闭/休眠期间跨过的边界在下次启动后
+照常生效（定时器方案会漏重置）；无并发定时任务开销；判定路径本来就在
+DB Mutex 下串行，滚动写是一行 UPDATE。
+
+### Database changes
+
+- `SCHEMA_VERSION` 20 → 21，`migrate_v20_to_v21`（幂等，向后兼容）：
+  `api_key_limits` 新增列 `reset_period TEXT NOT NULL DEFAULT 'never'`。
+  存量行回填 `never`，行为与 V1.0 完全一致。
+- 刻意**不加 CHECK 约束**：保证迁移路径（ALTER ADD COLUMN）与全新建表
+  DDL 行为完全一致；值域由保存路径（`ResetPeriod::parse`）校验，读取侧
+  未知值回退 never 并告警（与汇率 `parse_exchange_rate` 同一防御思路）。
+- 全新建表 DDL 同步包含该列（DEFAULT 'never'）。
+- 启动时预迁移备份逻辑照常生效；无数据删除、无表重建。
+
+### Backend / Proxy / Frontend changes
+
+- `services/usage_limit.rs`：`ResetPeriod` 枚举（never/hourly/daily/
+  weekly/monthly）+ `current_period_start` / `next_period_start`
+  （本地时区，DST 处理与 `usage_rollup::compute_local_midnight_cutoff`
+  同款：歧义取较早者、gap 顺延一小时、最终 UTC 兜底）；
+  `UsageLimitConfig.resetPeriod`（缺省 never，非法值拒绝入库）；
+  `BudgetStatus.resetPeriod` / `nextResetAt`；guard 懒滚动接入。
+- `database/dao/usage_limit.rs`：`ApiKeyLimitRow.reset_period` +
+  SELECT/UPSERT 更新。
+- `commands/`：命令签名不变（新字段随 config 序列化透传）。
+- `UsageLimitDialog.tsx`：重置周期五段选择器（bg-muted 分段控件，与
+  限制方式/币种同款）；never 显示说明文案；周期生效且与已保存配置一致时
+  展示「下次重置」（`formatResetTime`，locale 推导与 Usage 页一致）；
+  保存载荷始终携带 `resetPeriod`。
+- `types/usageLimit.ts`：`UsageLimitResetPeriod` 类型 + status/config 字段。
+
+### Tests
+
+- Rust 单元测试（`services/usage_limit/tests.rs` 28 → 36 个）：
+  周期边界本地日历对齐（含跨年/周界/边界时刻）、next 严格未来、
+  parse 值域（大小写敏感）、hourly/daily/weekly/monthly 滚动与恢复、
+  never 语义回归（不因日历边界自动放行）、保存校验与周期切换对齐、
+  状态回带 resetPeriod/nextResetAt、脏数据回退 never、手动重置与周期
+  共存、全新 DDL 默认值。
+- Proxy 集成测试（`forwarder.rs`）新增
+  `budget_recovers_after_period_boundary_rollover`：昨天 $10 ≥ $5 限额 +
+  daily 周期 → guard 懒滚动放行且窗口持久化到今天零点；对照组今天窗口
+  内 $10 依旧拦截。`insert_budget_log_at` 支持自定义 created_at。
+- 前端测试（`UsageLimitDialog.test.tsx` 21 → 25 个）：选择器五选项渲染、
+  默认 never + hint、保存携带所选周期、已保存周期展示下次重置、切换未
+  保存周期不展示过期边界、重开保留已保存周期（aria-pressed）。
+
+### Known limitations
+
+- 周期边界按本机时区计算；跨时区使用时「每天」的零点跟随设备当前时区。
+- DST 切换日的边界存在 ±1 小时级的墙钟歧义（gap 顺延、歧义取较早），
+  仅影响每年个别小时，不产生方向性错误。
+- **Budget enforcement only applies to traffic routed through CC Switch
+  Local Proxy.**（V1.0 边界不变；周期重置不改变观测边界）
+
+### Verification
+
+2026-09-18 全量验证（本机工具链说明：`rust-toolchain.toml` 锁定的 1.95
+工具链缺 cargo 组件、无法执行；实际使用本机 stable 1.97.1 完成验证，1.97
+下仅有的 3 个 clippy 警告均位于本次未触碰的既有文件
+`gemini_mcp.rs` / `tray.rs` / `transform_codex_chat.rs`，属版本差异下的
+既有警告）：
+
+| 检查 | 结果 |
+| --- | --- |
+| `pnpm typecheck` | PASS |
+| `pnpm format:check` | PASS |
+| `pnpm test:unit` | PASS（139 文件 / 1145 tests） |
+| `pnpm build:renderer`（vite 生产构建） | PASS |
+| `cargo build --release` | PASS（4m20s，产出 release 二进制） |
+| `cargo fmt --check` | PASS |
+| `cargo clippy --all-targets` | 本次改动文件 0 警告（3 个既有警告见上） |
+| `cargo test --lib`（跳过网络型模块） | **PASS：2917 passed / 0 failed**（9 ignored 为仓库原有） |
+| `cargo test --doc` | PASS（0 / 0 failed） |
+| 定向回归 | usage_limit 36、budget/forwarder 39（含新增 rollover）、migration 38 全过 |
+
+环境限制说明：`proxy::server::tests` 与
+`proxy::hyper_client::tests` 中的 9 个网络型集成测试在本沙箱环境挂起
+（需真实 socket/上游），为**既有环境限制、与本次改动无关**——佐证：本机
+另一同名工程存在凌晨遗留的同模块挂起调试进程；本次改动涉及的 budget
+判定路径（`proxy::forwarder::tests`）已全量通过。以上 9 个测试以
+`--skip` 模块级跳过后其余全绿。
+
+---
 
 ## 2026-09-17 — API Key 使用限额 / Budget Limit
 

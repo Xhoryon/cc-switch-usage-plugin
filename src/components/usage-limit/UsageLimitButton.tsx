@@ -17,6 +17,7 @@ import type {
   UsageLimitState,
   UsageLimitStatus,
 } from "@/types/usageLimit";
+import { USAGE_LIMIT_CURRENCY_SYMBOLS } from "@/types/usageLimit";
 
 /** Token 友好显示：532 / 12.4K / 1.25M / 18.2M */
 export function formatTokensCompact(tokens: number): string {
@@ -37,9 +38,9 @@ export function formatTokensExact(tokens: number): string {
   return tokens.toLocaleString("en-US");
 }
 
-/** 金额显示：$12.34 / ¥88.50 */
+/** 金额显示：$12.34 / ¥88.50 / €9.99（符号表与后端 LimitCurrency::symbol 一致） */
 export function formatMoney(amount: string, currency: UsageLimitCurrency) {
-  const symbol = currency === "CNY" ? "¥" : "$";
+  const symbol = USAGE_LIMIT_CURRENCY_SYMBOLS[currency] ?? "$";
   const value = Number(amount);
   if (!Number.isFinite(value)) {
     return `${symbol}${amount}`;
@@ -60,12 +61,11 @@ export function budgetSummary(
     return undefined;
   }
   if (status.limitType === "money") {
-    const currency: UsageLimitCurrency =
-      status.currency === "CNY" ? "CNY" : "USD";
+    const currency: UsageLimitCurrency = status.currency ?? "USD";
     const used =
-      currency === "CNY"
-        ? (status.usedMoneyInCurrency ?? status.usedMoneyUsd)
-        : status.usedMoneyUsd;
+      currency === "USD"
+        ? status.usedMoneyUsd
+        : (status.usedMoneyInCurrency ?? status.usedMoneyUsd);
     return {
       used: formatMoney(used, currency),
       limit: formatMoney(status.limitAmount, currency),
