@@ -2,10 +2,10 @@
 
 # 使用限額（Budget Limit）知識庫
 
-> 適用版本：V1.0.2（2026-09-18）。V1.0 基礎功能見 `docs/development_log.md`
-> 2026-09-17 條目；V1.0.1 重置週期與 V1.0.2 多幣種見 2026-09-18 條目。本文是
-> 三者的整合視圖，面向後續維護者，回答「它是什麼、為什麼這樣設計、改哪裡要
-> 小心什麼」。
+> 適用版本：**V1.1.0**（公開發布，2026-09-18；內部迭代 V1.0 / V1.0.1 / V1.0.2
+> 的整合，基座 CC Switch 3.20.3）。各迭代明細見 `docs/development_log.md`
+> 對應條目。本文是整合視圖，面向後續維護者，回答「它是什麼、為什麼這樣
+> 設計、改哪裡要小心什麼」。
 
 ---
 
@@ -366,6 +366,20 @@ CC Switch（V1 明確邊界，不是 bug）；`unsupported_credential` = OAuth �
 JPY 匯率）。該幣種已儲存的匯率會自動回填；首次使用該幣種時回填預設值；
 回傳前儲存會被校驗攔截，不會落庫錯誤匯率。
 
+**Q：如何發布新版本？**
+1. `pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'`
+   （無更新簽章私鑰時關閉 updater 產物；建置依賴 cargo 在 PATH 中）；
+2. DMG 按約定重新命名 `CC.Switch_<基座版本>_aarch64_usage-limit.dmg`；
+3. `git archive --format=zip <tag>` 產生源碼快照（命名隨倉庫）；
+4. `gh release create <tag> --notes-file <四語正文>` 附雙資產。
+正文範本見 `docs/release-notes/usage-limit-v1.1.0.md`。
+
+**Q：倉庫改名後 CI 為什麼會掛？**
+`actions/cache` 恢復的 `src-tauri/target` 快取中，Tauri build script 輸出內嵌
+舊工作區絕對路徑，改名後必然失配（報 "failed to read plugin permissions"）。
+修復：`gh cache delete --all` 後重跑——restore-keys 前綴回退會把舊快取帶回，
+只改 key 前綴無效，必須刪除。
+
 **Q：為什麼 `api_key_limits.reset_period` 沒有 CHECK 約束？**
 讓 ALTER ADD COLUMN 遷移路徑與全新 DDL 行為完全一致；值域由儲存路徑
 校驗，讀取側未知值回退 never（`parse_reset_period` 告警兜底）。
@@ -414,6 +428,8 @@ JPY 匯率）。該幣種已儲存的匯率會自動回填；首次使用該幣�
 | `src/hooks/useUsageEventBridge.ts` | 記帳事件 → invalidate（主介面重新整理） |
 | `src/i18n/locales/{zh,zh-TW,en,ja}.json` | `usageLimit` 命名空間 × 39 keys |
 | `tests/components/UsageLimitDialog.test.tsx` | 前端測試（31） |
+| `docs/release-notes/usage-limit-v1.1.0.md` | 四語發布正文（GitHub Release 與倉庫各存一份） |
+| `docs/usage-limit-knowledge-base-{zh,en,zh-TW,ja}.md` | 本知識庫的四語言版本 |
 
 ---
 

@@ -2,11 +2,11 @@
 
 # 使用制限（Budget Limit）ナレッジベース
 
-> 適用バージョン：V1.0.2（2026-09-18）。V1.0 の基本機能は
-> `docs/development_log.md` の 2026-09-17 エントリ、V1.0.1 のリセット周期と
-> V1.0.2 の多通貨対応は 2026-09-18 のエントリを参照。本書は三者を統合した
-> ビューであり、今後のメンテナに向けて「何か、なぜこの設計か、どこを変更する
-> ときに注意すべきか」を答える。
+> 適用バージョン：**V1.1.0**（公開リリース、2026-09-18。内部イテレーション
+> V1.0 / V1.0.1 / V1.0.2 の統合、ベース CC Switch 3.20.3）。各イテレーションの
+> 詳細は `docs/development_log.md` の対応エントリを参照。本書は統合ビューで
+> あり、今後のメンテナに向けて「何か、なぜこの設計か、どこを変更するときに
+> 注意すべきか」を答える。
 
 ---
 
@@ -395,6 +395,24 @@ JPY のレートとして保存しかねない）。選択した通貨の保存�
 再取得され、初使用時は既定値が入る。取得が完了するまで保存は検証で遮断され、
 誤ったレートが保存されることはない。
 
+**Q：新しいバージョンをリリースするには？**
+1. `pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'`
+   （署名鍵がない場合は updater 生成物を無効化。ビルドには cargo が PATH 上
+   必要）；
+2. DMG を `CC.Switch_<ベースバージョン>_aarch64_usage-limit.dmg` に改名；
+3. `git archive --format=zip <tag>` でソーススナップショットを作成
+   （名前はリポジトリに合わせる）；
+4. `gh release create <tag> --notes-file <4 言語本文>` で両アセットを添付。
+本文テンプレートは `docs/release-notes/usage-limit-v1.1.0.md`。
+
+**Q：リポジトリ改名後に CI が落ちるのはなぜ？**
+`actions/cache` で復元される `src-tauri/target` キャッシュには、旧ワーク
+スペースの絶対パスが埋め込まれた Tauri build script の出力が含まれ、改名後は
+必ず不整合になります（"failed to read plugin permissions"）。対処：
+`gh cache delete --all` してから再実行——restore-keys の前方一致フォール
+バックが古いキャッシュを再投入するため、key 接頭辞の変更だけでは不十分で、
+削除が必須です。
+
 **Q：`api_key_limits.reset_period` に CHECK 制約がないのはなぜ？**
 ALTER ADD COLUMN の移行パスと新規 DDL の挙動を完全に一致させるため。値域は
 保存経路で検証し、読み取り側の不明値は never にフォールバック
@@ -446,6 +464,8 @@ ALTER ADD COLUMN の移行パスと新規 DDL の挙動を完全に一致させ�
 | `src/hooks/useUsageEventBridge.ts` | 記帳イベント → invalidate（メイン UI の更新） |
 | `src/i18n/locales/{zh,zh-TW,en,ja}.json` | `usageLimit` 名前空間 × 39 keys |
 | `tests/components/UsageLimitDialog.test.tsx` | フロントエンドテスト（31） |
+| `docs/release-notes/usage-limit-v1.1.0.md` | 4 言語リリース本文（GitHub Release とリポジトリの両方に保存） |
+| `docs/usage-limit-knowledge-base-{zh,en,zh-TW,ja}.md` | 本ナレッジベースの 4 言語版 |
 
 ---
 

@@ -13,6 +13,96 @@
 > 合并以 **V1.1.0**（基座 CC Switch 3.20.3）公开发布。/ Internal iterations
 > V1.0 / V1.0.1 / V1.0.2 shipped publicly as **V1.1.0**.
 
+## 2026-09-18 — V1.1.0 公开发布 / Public Release & Release Engineering
+
+### Scope
+
+V1.0.2 代码冻结后的发布工程轮：文档四语言补齐、全仓库脱敏审计、
+仓库命名统一、GitHub Release v1.1.0 发布、CI 事故定位与修复。
+本轮**无功能代码变更**（代码态与 V1.0.2 完全一致），改动集中在
+文档、元数据与发布流程。
+
+### 脱敏审计（发布前置）
+
+- 全仓库 1278 个源文件扫描（排除 gitignore 的构建产物/依赖）：
+  API Key 形态、本地路径、用户名、邮箱、JWT、私钥块、密码字面量。
+- **处置 1 处**：`deplink.html`（上游深链接调试演示页）残留
+  `ctx7sk-<UUID>` 形态的 Context7 密钥（同页其余示例均为占位符，
+  唯它例外）→ 替换为 `ctx7sk-your-api-key-here`。
+- 核实为安全的高频命中：`sk-ant-api03-*`（日志脱敏测试的验证串，断言
+  「不得包含原文」）、`sk-claude`/`sk-codex`/`sk-test`（内置供应商哨兵值）、
+  `AKIAIOSFODNN7EXAMPLE`（AWS 官方文档示例键）、`/Users/test|me|demo`
+  （通用夹具）、`farion1231@gmail.com`（上游作者公开联系方式）、
+  `frontendLogger.ts` 的私钥检测正则（功能代码本身）。
+- 本地数据：无 .env/.db/.log 落入源码树；`jiayihuang` 仅存在于
+  `.mimosa/` 本地扫描器状态（gitignored）。
+- 作者署名（Jiayi Huang / Xhoryon）为有意公开身份，保留。
+
+### 文档四语言补齐（English / 简体中文 / 繁體中文 / 日本語）
+
+- 知识库新增 English / 繁體中文 / 日本語 译本（`docs/usage-limit-knowledge-
+  base-{en,zh-TW,ja}.md`），四版 13 章结构逐一对齐，头部互为语言导航。
+- README ×4 段落级 parity 校验（脚本比对 8 特性 + 8 章节关键内容）。
+- i18n 完整性脚本校验：组件引用的 29 个静态 key + 10 个动态模板 key
+  在 4 locale 无缺失（usageLimit 命名空间 39 keys × 4）。
+- 开发日志保持中文追加式（头部声明），知识库承载四语言。
+- 仓库命名统一：README ×4 的 12 处 URL 从 `ccswitch-usage-plugin`
+  修正为 `cc-switch-usage-plugin`；`package.json` 补 `repository` 字段。
+
+### Release engineering
+
+- **版本映射**：内部迭代 V1.0 / V1.0.1 / V1.0.2 合并以 V1.1.0 发布，
+  基座 CC Switch 版本号 3.20.3 不变（DMG 文件名沿用）。
+- **DMG 构建**：`pnpm tauri build --config
+  '{"bundle":{"createUpdaterArtifacts":false}}'`——本环境无
+  `TAURI_SIGNING_PRIVATE_KEY`，关闭 updater 签名产物（DMG 本身无需签名）；
+  产物按约定重命名 `CC.Switch_3.20.3_aarch64_usage-limit.dmg`。
+  构建脚本依赖 cargo 在 PATH，非交互 shell 需显式补工具链 PATH。
+- **Source zip**：`git archive --format=zip v1.1.0` 生成
+  `cc-switch-usage-plugin-1.1.0-source.zip`（沿用 v1.0.0 的 source snapshot
+  惯例，命名修正为与新仓库名一致），已验证不含本地/敏感文件。
+- **Release 正文**：`docs/release-notes/usage-limit-v1.1.0.md`（四语分节 +
+  锚点导航，面向用户：新内容 / 完整功能 / 隐私声明 / 安装）。
+- **发布**：main 推送（60045de）→ tag v1.1.0 →
+  `gh release create v1.1.0` 附双资产，正式版（非 draft/prerelease）。
+- **遗留决策（未擅自改动）**：`tauri.conf.json` 的 updater endpoint 仍指
+  上游 `farion1231/cc-switch`；切到本仓库需发布流程以相同 minisign 密钥
+  签发 `latest.json`，属产品决策。
+
+### CI 事故与修复（rename → stale cache）
+
+- 症状：推送后 4 个后端平台 CI 全部失败于 build.rs：
+  `failed to read plugin permissions ... ccswitch-usage-plugin/src-tauri/
+  target/.../app_hide.toml: No such file or directory`——注意缺失路径是
+  **旧仓库名**，而 checkout 目录已是新名。
+- 根因：仓库曾由 `ccswitch-usage-plugin` 改名为 `cc-switch-usage-plugin`；
+  `actions/cache` 恢复的 `src-tauri/target` 缓存中，Tauri build script 的
+  输出内嵌了旧工作区绝对路径，改名后绝对路径失配必然报错。
+  缓存创建时间（04:28–06:03，v1.0.0 时代）佐证。
+- 修复：`gh cache delete --all` 清空全部缓存 → `gh run rerun --failed` →
+  **6 个任务全绿**（Frontend + Ubuntu/macOS/Windows/WSL2 后端，含完整
+  `cargo test`）。
+- 经验：**仓库改名必须清 CI 缓存**；且 actions/cache 的 restore-keys
+  前缀回退会把旧缓存再次带回——只改 key 前缀不够，需删除。
+
+### 安全扫描
+
+- 推送触发的 Mimosa 深度扫描（238 条 hard-coded-credential，全部 high）
+  逐条核实：分布在 proxy.rs(102)/claude.rs(33) 等测试密集文件，样本均为
+  测试假值（`test-token`/`sk-test-123`/`old-pass`/`refresh-secret`…），
+  限额功能自身文件零命中。属凭据形态字面量的预期扫描噪音，无真实凭据。
+
+### Verification（发布链路终态）
+
+- 前端：typecheck / format:check / 1151 tests / vite build 全 PASS。
+- 后端：fmt --check / 2925 tests（跳过沙箱网络型模块）/ release build PASS。
+- CI：push 后 6 任务全绿（清缓存重跑后）。
+- 冒烟：release 二进制以隔离 `CC_SWITCH_TEST_HOME` 启动，因本机正在运行
+  同应用经 single-instance 正常交接退出（0）——非崩溃。
+- 发布终态：Release v1.1.0 正式版 + 双资产 + tag；仓库默认分支 main。
+
+---
+
 ## 2026-09-18 — V1.0.2 多币种限额 / Multi-Currency Budget
 
 ### Feature

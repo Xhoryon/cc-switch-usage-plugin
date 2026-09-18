@@ -2,11 +2,11 @@
 
 # Usage Limit (Budget Limit) Knowledge Base
 
-> Applies to V1.0.2 (2026-09-18). See the 2026-09-17 entry in
-> `docs/development_log.md` for V1.0 basics; the 2026-09-18 entries cover the
-> V1.0.1 reset schedule and V1.0.2 multi-currency support. This document is an
-> integrated view of all three, written for future maintainers: what it is,
-> why it is designed this way, and what to watch out for when changing it.
+> Applies to **V1.1.0** (public release, 2026-09-18; the integration of internal
+> iterations V1.0 / V1.0.1 / V1.0.2, base CC Switch 3.20.3). Iteration details
+> live in the matching `docs/development_log.md` entries. This document is an
+> integrated view, written for future maintainers: what it is, why it is
+> designed this way, and what to watch out for when changing it.
 
 ---
 
@@ -422,6 +422,23 @@ currency's saved rate refills automatically — or its default on first use —
 and until then saving is blocked by validation, so a wrong rate can never be
 persisted.
 
+**Q: How do I cut a new release?**
+1. `pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'`
+   (skips updater artifacts when no signing key is present; the build needs
+   cargo on PATH);
+2. rename the DMG to `CC.Switch_<base version>_aarch64_usage-limit.dmg`;
+3. `git archive --format=zip <tag>` for the source snapshot (named after the
+   repo);
+4. `gh release create <tag> --notes-file <4-language body>` with both assets.
+The body template lives in `docs/release-notes/usage-limit-v1.1.0.md`.
+
+**Q: Why did CI break after the repository was renamed?**
+The `src-tauri/target` cache restored by `actions/cache` contains Tauri build
+script outputs with absolute paths of the old workspace; after a rename they
+always mismatch ("failed to read plugin permissions"). Fix:
+`gh cache delete --all` and rerun — the restore-keys prefix fallback would
+bring the poisoned cache back, so deleting is mandatory.
+
 **Q: Why does `api_key_limits.reset_period` have no CHECK constraint?**
 So the ALTER ADD COLUMN migration and the fresh DDL behave identically; the
 value domain is validated on save and unknown stored values fall back to
@@ -476,6 +493,8 @@ row is cleaned up via FK CASCADE.
 | `src/hooks/useUsageEventBridge.ts` | Accounting event → invalidate (main UI refresh) |
 | `src/i18n/locales/{zh,zh-TW,en,ja}.json` | `usageLimit` namespace × 39 keys |
 | `tests/components/UsageLimitDialog.test.tsx` | Frontend tests (31) |
+| `docs/release-notes/usage-limit-v1.1.0.md` | 4-language release body (mirrored on the GitHub Release) |
+| `docs/usage-limit-knowledge-base-{zh,en,zh-TW,ja}.md` | The four language editions of this knowledge base |
 
 ---
 
