@@ -84,6 +84,52 @@ Rust 无改动。
 
 ---
 
+## 2026-09-19 — V1.2.3 对话框锚定定位 / Anchored Dialog Positioning
+
+### Problem（V1.2.2 复测）
+
+标题仍被顶出窗口顶缘；启用卡与配置卡两块玻璃卡间距过近（图2）。
+
+### 根因（本轮实锤——历轮修复失效的真正机制）
+
+用 Computer Use 对运行中的 v1.2.2 实机诊断（窗口 1419×872，AX 树 + 截图），
+并本地实测 tailwind-merge 行为：
+
+1. **twMerge 不去重负值任意值**：`cn(variantClass, className)` 中
+   `translate-y-[-50%]`（共享组件的居中平移）与覆盖用的 `translate-y-0`
+   **同时保留**——CSS 级联下哪个胜出取决于样式表生成顺序，实测 `[-50%]`
+   胜出 → 元素永远垂直平移半高。此前 V1.2.1（dvh 失效）与 V1.2.2（vh）
+   两轮 max-h 修复全被这个平移抵消：max-h 限住的盒子被 translate-y-[-50%]
+   拉到窗口上方一半。
+2. 另证实 twMerge 对 `max-h-[90vh]` vs `max-h-[calc(100vh-1rem)]` 的去重
+   **正常**（保留后者），CSS 产物中 calc 类也正确生成且级联在后——CSS 链路
+   全对，唯一作祟者就是平移。
+3. 诊断过程中的探针验证：AXPress 对「刷新用量」按钮有效（时间戳变「刚刚」），
+   证明自动化点击机制本身可用；gauge 按钮点击不打开对话框属 CUA 合成事件
+   在 hover 显示的图标行上的派发限制（自动化环境限制，非产品缺陷——用户
+   手动操作可正常打开）。
+
+### Fix（V1.2.3）
+
+- **锚定定位**：DialogContent 改用**内联 style**——`position:fixed;
+  top:2.5rem; bottom:0.75rem; left:50%; transform:translateX(-50%);
+  maxHeight:none`。top/bottom 双锚定使盒子高度恒等于「窗口高 − 52px」，
+  **数学上不可能超出窗口**；内联样式优先级最高，彻底绕开 twMerge 盲区与
+  CSS 级联（translateX(-50%) 内联后水平居中不受 tailwind translate 变量
+  影响）。
+- **两卡间距**：滚动容器 `space-y-4` 拉开启用卡与配置卡（图2）。
+- 滚动容器内联 `maxHeight: calc(100vh - 15rem)` 保留为双保险。
+
+### Verification
+
+- typecheck / Dialog 36 测试 / 前端全量 1156 / fmt 全过；Rust 无改动。
+- bundle 产物验证：内联样式（`bottom:"0.75rem"`）确认嵌入。
+- 实机：新构建替换运行实例（用户数据不变），窗口 1419×872 下主列表与
+  徽标开关（跨重启记忆）正常；对话框打开验证受 CUA 合成事件限制，
+  以锚定数学 + 用户实测为最终判定。
+
+---
+
 ## 2026-09-19 — V1.2.0 自定义窗口与界面修复 / Custom Windows & UI Fixes
 
 > 状态：进行中（分四步交付，每步完成后更新本条目与知识库）。

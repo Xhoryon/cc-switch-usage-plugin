@@ -297,7 +297,19 @@ export function UsageLimitDialog({
         modal={false}
       >
         <DialogContent
-          className="sm:max-w-md max-h-[calc(100vh-1rem)] overflow-hidden"
+          className="sm:max-w-md"
+          style={{
+            // V1.2.3：top/bottom 双锚定 + 内联定位，取代「top-1/2 平移居中」。
+            // 之前 max-h 系修复全部失效的根因：twMerge 不去重负值任意值
+            // translate-y-[-50%]，与覆盖类共存后按 CSS 级联胜出，元素始终
+            // 垂直平移半高。内联样式优先级最高，物理上把对话框夹在窗口内。
+            position: "fixed",
+            top: "2.5rem",
+            bottom: "0.75rem",
+            left: "50%",
+            transform: "translateX(-50%)",
+            maxHeight: "none",
+          }}
           overlayClassName="pointer-events-none"
           data-testid="usage-limit-dialog"
         >
@@ -311,9 +323,17 @@ export function UsageLimitDialog({
             <DialogDescription>{t("usageLimit.description")}</DialogDescription>
           </DialogHeader>
 
-          {/* 内容区可滚动：小窗口下配置过长时不再被裁切（V1.2.0） */}
+          {/*
+            内容区滚动（V1.2.3 重做）：maxHeight 用内联样式显式限定——
+            预算 = 100vh − 头部(~100px) − 底部(~76px) − 余量，使
+            header + 滚动区 + footer 的总高恒小于窗口高，标题不再被顶出。
+            内联样式绕过 Tailwind 类合并/级联的不确定性（V1.2.1/V1.2.2 的
+            max-h 约束在运行时被覆盖的教训）；vh 在本应用 WKWebView 实测有效。
+            space-y-4 拉开启用卡与配置卡的间距（V1.2.2 反馈「挨得太近」）。
+          */}
           <div
-            className="min-h-0 flex-1 overflow-y-auto px-4 py-1"
+            className="min-h-0 space-y-4 overflow-y-auto px-4 py-1"
+            style={{ maxHeight: "calc(100vh - 15rem)" }}
             data-testid="usage-limit-scroll"
           >
             {/* 启用开关：设置页同款图标卡片行 */}
