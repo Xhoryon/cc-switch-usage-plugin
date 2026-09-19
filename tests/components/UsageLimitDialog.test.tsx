@@ -7,6 +7,7 @@ import {
   UsageLimitButton,
   formatTokensCompact,
   formatMoney,
+  formatDurationUntil,
 } from "@/components/usage-limit/UsageLimitButton";
 import type { UsageLimitStatus } from "@/types/usageLimit";
 import type { Provider } from "@/types";
@@ -345,6 +346,8 @@ describe("UsageLimitDialog", () => {
       currency: "USD",
       limitAmount: "100.00",
       resetPeriod: "never",
+      windowLength: null,
+      windowUnit: null,
     });
   });
 
@@ -383,6 +386,68 @@ describe("UsageLimitDialog", () => {
     fireEvent.click(screen.getByTestId("usage-limit-save"));
     expect(saveMutate).toHaveBeenCalledWith(
       expect.objectContaining({ resetPeriod: "weekly" }),
+    );
+  });
+
+  it("custom period: requires a valid window length before saving", () => {
+    renderDialog(baseStatus());
+    fireEvent.click(screen.getByTestId("usage-limit-toggle"));
+    fireEvent.click(
+      screen.getByRole("button", { name: "usageLimit.resetCustom" }),
+    );
+    expect(screen.getByTestId("usage-limit-window-length")).toBeTruthy();
+    // 空长度：拦截
+    fireEvent.change(screen.getByTestId("usage-limit-amount"), {
+      target: { value: "10" },
+    });
+    fireEvent.click(screen.getByTestId("usage-limit-save"));
+    expect(screen.getByTestId("usage-limit-error")).toBeTruthy();
+    expect(saveMutate).not.toHaveBeenCalled();
+    // 非整数 / 超上限：拦截
+    for (const bad of ["0", "3.5", "20000"]) {
+      fireEvent.change(screen.getByTestId("usage-limit-window-length"), {
+        target: { value: bad },
+      });
+      fireEvent.click(screen.getByTestId("usage-limit-save"));
+      expect(screen.getByTestId("usage-limit-error")).toBeTruthy();
+      expect(saveMutate).not.toHaveBeenCalled();
+    }
+    // 合法：载荷携带窗口字段与单位
+    fireEvent.change(screen.getByTestId("usage-limit-window-length"), {
+      target: { value: "6" },
+    });
+    fireEvent.click(screen.getByTestId("usage-limit-save"));
+    expect(saveMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resetPeriod: "custom",
+        windowLength: 6,
+        windowUnit: "hours",
+      }),
+    );
+  });
+
+  it("custom period: switches unit to days and keeps saved values on reopen", () => {
+    renderDialog(
+      baseStatus({
+        enabled: true,
+        limitType: "token",
+        limitAmount: "1000000",
+        resetPeriod: "custom",
+        windowLength: 7,
+        windowUnit: "days",
+        nextResetAt: 1758500000,
+      }),
+    );
+    // status.enabled=true → 配置区已展开，无需点 toggle
+    expect(screen.getByTestId("usage-limit-window-length")).toHaveValue("7");
+    fireEvent.click(screen.getByRole("button", { name: "usageLimit.days" }));
+    fireEvent.click(screen.getByTestId("usage-limit-save"));
+    expect(saveMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resetPeriod: "custom",
+        windowLength: 7,
+        windowUnit: "days",
+      }),
     );
   });
 
@@ -563,7 +628,11 @@ describe("UsageLimitButton", () => {
       state: "active",
     });
     renderButton(mockStatus);
-    expect(screen.getByRole("button").className).toContain("text-emerald-600");
+    expect(
+      screen
+        .getByRole("button", { name: "usageLimit.title" })
+        .className,
+    ).toContain("text-emerald-600");
   });
 
   it("WARNING state gets amber styling", () => {
@@ -575,7 +644,7 @@ describe("UsageLimitButton", () => {
       state: "warning",
     });
     renderButton(mockStatus);
-    const btn = screen.getByRole("button");
+    const btn = screen.getByRole("button", { name: "usageLimit.title" });
     expect(btn.className).toContain("text-amber-600");
   });
 
@@ -589,7 +658,7 @@ describe("UsageLimitButton", () => {
       state: "exhausted",
     });
     renderButton(mockStatus);
-    const btn = screen.getByRole("button");
+    const btn = screen.getByRole("button", { name: "usageLimit.title" });
     expect(btn.className).toContain("text-red-600");
   });
 
@@ -603,8 +672,50 @@ describe("UsageLimitButton", () => {
   it("opens the dialog on click", async () => {
     const onOpen = vi.fn();
     renderButton(baseStatus(), onOpen);
-    fireEvent.click(screen.getByRole("button"));
+    fireEvent.click(screen.getByRole("button", { name: "usageLimit.title" }));
     expect(onOpen).toHaveBeenCalled();
+  });
+
+  it("badge toggle shows percent and time-to-reset on the card", () => {
+    const onOpen = vi.fn();
+    mockStatus = baseStatus({
+      enabled: true,
+      limitType: "money",
+      currency: "USD",
+      limitAmount: "10",
+      usedMoneyUsd: "3.6",
+      percentUsed: "36.00",
+      state: "active",
+      nextResetAt: Math.floor(Date.now() / 1000) + 3600 * 26,
+    });
+    renderButton(mockStatus, onOpen);
+    // 默认隐藏：无徽标
+    expect(screen.queryByTestId("usage-limit-card-badge")).toBeNull();
+    // 打开显示：36% + 时长
+    fireEvent.click(
+      screen.getByRole("button", { name: "usageLimit.showOnCard" }),
+    );
+    const badge = screen.getByTestId("usage-limit-card-badge");
+    expect(badge.textContent).toContain("36%");
+    expect(badge.textContent).toMatch(/\dd/);
+    expect(
+      screen.getByRole("button", { name: "usageLimit.hideFromCard" }),
+    ).toBeTruthy();
+    // 再点隐藏
+    fireEvent.click(
+      screen.getByRole("button", { name: "usageLimit.hideFromCard" }),
+    );
+    expect(screen.queryByTestId("usage-limit-card-badge")).toBeNull();
+  });
+
+  it("badge is hidden when the limit is off", () => {
+    const onOpen = vi.fn();
+    mockStatus = baseStatus({ enabled: false, percentUsed: null });
+    renderButton(mockStatus, onOpen);
+    fireEvent.click(
+      screen.getByRole("button", { name: "usageLimit.showOnCard" }),
+    );
+    expect(screen.queryByTestId("usage-limit-card-badge")).toBeNull();
   });
 });
 
@@ -619,5 +730,14 @@ describe("format helpers", () => {
   it("formats money with currency symbols", () => {
     expect(formatMoney("12.34", "USD")).toBe("$12.34");
     expect(formatMoney("88.5", "CNY")).toBe("¥88.50");
+  });
+
+  it("formats duration until next reset", () => {
+    const now = 1_800_000_000;
+    expect(formatDurationUntil(now + 30, now)).toBe("<1m");
+    expect(formatDurationUntil(now + 38 * 60, now)).toBe("38m");
+    expect(formatDurationUntil(now + 5 * 3600 + 12 * 60, now)).toBe("5h12m");
+    expect(formatDurationUntil(now + 2 * 86400 + 4 * 3600, now)).toBe("2d4h");
+    expect(formatDurationUntil(now - 100, now)).toBe("<1m");
   });
 });

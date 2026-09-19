@@ -13,6 +13,71 @@
 > 合并以 **V1.1.0**（基座 CC Switch 3.20.3）公开发布。/ Internal iterations
 > V1.0 / V1.0.1 / V1.0.2 shipped publicly as **V1.1.0**.
 
+## 2026-09-19 — V1.2.0 自定义窗口与界面修复 / Custom Windows & UI Fixes
+
+> 状态：进行中（分四步交付，每步完成后更新本条目与知识库）。
+
+### Step 1 — 窗口语义重做 + 自定义时长（后端）
+
+**用户反馈**：① 限额统计应从「打开选项」起算，而非并入开启前的历史用量；
+② 用户应可自定义 N 小时 / N 天的窗口。
+
+**语义变更（save_budget_config）**：
+- 窗口起点一律从「现在」起算的情形扩为四种：首次创建、换 Key、
+  **关→开（V1.2.0 新增）**、**启用状态下改变重置配置（V1.2.0 新增：
+  周期/窗长/单位切换，新旧口径不可混算）**。仅改金额或开关关闭不重置。
+- **删除保存时的日历回对齐**（V1.0.1 起 daily 保存会回对齐到当天零点，
+  把开启前当天早些的用量吞进来——正是用户反馈的问题）。日历周期的前向
+  滚动由 guard / status 的 `effective_window_start`（max(锚点, 边界)）
+  即时处理：15:00 启用 daily → 从 15:00 起算，下一零点起严格按日滚动。
+
+**自定义窗口（ResetPeriod::Custom）**：
+- 新增周期值 `custom` + 行列 `window_length`（1~10000）+ `window_unit`
+  （hours/days），DB v22→v23 两可空列，存量行 NULL 完全向后兼容。
+- 窗口起点 = 启用锚点 + floor((now-锚点)/窗长) × 窗长（严格按启用时刻
+  滚动，不对齐日历）；下次重置 = 当前窗口起点 + 窗长。
+- 统一入口 `effective_window_start(row, now)` / `next_window_reset(...)`：
+  guard 懒滚动、状态查询、next 展示共用一套数学。
+
+**验证**：usage_limit 单测 41→47（新增启用起算 / 关→开重启 / custom
+小时滚动含持久化 / custom 天数数学 / 保存校验矩阵 / daily 开启不回吞），
+budget 集成 39、migration 40（含 v23）全过；前端 typecheck PASS。
+
+### Step 2 — 计费窗口小窗裁切 + 主窗口拖动冲突（前端）
+
+- **裁切**：Dialog 内容区（Header 与 Footer 之间）包进
+  `min-h-0 flex-1 overflow-y-auto` 滚动容器——共享 DialogContent 已有
+  `max-h-[90vh] flex flex-col`，此前中间内容超高时直接溢出被裁；
+  小窗口下配置过长现在可上下滚动看全。
+- **拖动冲突**：`Dialog root` 加 `modal={false}`，遮罩加
+  `overlayClassName="pointer-events-none"`——遮罩只做视觉压暗、指针事件
+  穿透到下层，主窗口标题栏恢复可拖动（背景按钮亦恢复可点，属非模态
+  对话框的标准行为）。Escape 关闭与点外不关闭语义不变。
+
+**验证**：typecheck PASS；UsageLimitDialog 31 测试全过。
+
+### Step 3 — 自定义周期 UI + 卡片用量徽标（前端）
+
+- **Dialog 自定义周期**：重置周期选择器 5 项 → 6 项（`custom`，网格改为
+  3 列 × 2 行）；选中 custom 显示「窗口长度」整数输入 + 小时/天分段控件；
+  保存前校验（1~10000 整数，否则 errorInvalidWindow 拦截），载荷携带
+  `windowLength` / `windowUnit`（非 custom 为 null）。
+- **卡片用量徽标**：`UsageLimitButton` 扩展为「徽标 + 显示开关 + 仪表盘
+  图标」——开关（Eye/EyeOff，aria-pressed）按 provider 持久化于
+  localStorage（仅 UI 偏好，非用量数据）；开启后卡片显示
+  `{percent}%`（按状态 emerald/amber/red 着色）+ `⏱{时长}`（距下次重置，
+  新助手 `formatDurationUntil`：38m / 5h12m / 2d4h）。限额关闭或百分比
+  缺失时徽标自动隐藏。对应参考图（Zhipu 卡片的「N 小时:N%」样式）。
+- **i18n**：新增 7 key ×4 locale（resetCustom / windowLength / hours /
+  days / errorInvalidWindow / showOnCard / hideFromCard），usageLimit
+  命名空间 39 → 46，parity 校验过。
+
+**验证**：typecheck PASS；Dialog/Button 测试 31 → 36（custom 校验矩阵、
+单位切换、载荷断言、徽标显隐/时长格式化）；全量前端 1156（+5）、后端
+2931（+6，含 custom 窗口 6 项）全绿；clippy 本次改动文件 0 警告。
+
+---
+
 ## 2026-09-18 — V1.1.1 安装包修复 / Installer Fixes
 
 ### Problem（用户实测反馈的三个症状）

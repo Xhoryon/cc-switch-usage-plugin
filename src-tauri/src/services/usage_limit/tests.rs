@@ -81,6 +81,8 @@ fn limit_row(
         limit_amount: amount.to_string(),
         usage_start_at: 1_000_000,
         reset_period: "never".to_string(),
+        window_length: None,
+        window_unit: None,
         created_at: 1_000_000,
         updated_at: 1_000_000,
     }
@@ -431,6 +433,8 @@ fn save_accepts_all_supported_currencies_only() {
             currency: Some(currency.to_string()),
             limit_amount: Some("10".to_string()),
             reset_period: None,
+            window_length: None,
+            window_unit: None,
         };
         let status = db.save_budget_config("p1", "claude", &config).unwrap();
         assert_eq!(status.currency.as_deref(), Some(currency), "{currency}");
@@ -443,6 +447,8 @@ fn save_accepts_all_supported_currencies_only() {
         currency: Some("RUB".to_string()),
         limit_amount: Some("10".to_string()),
         reset_period: None,
+        window_length: None,
+        window_unit: None,
     };
     assert!(db.save_budget_config("p1", "claude", &config).is_err());
 }
@@ -728,6 +734,8 @@ fn save_validates_and_persists_config() {
         currency: Some("USD".to_string()),
         limit_amount: Some("1000".to_string()),
         reset_period: None,
+        window_length: None,
+        window_unit: None,
     };
     assert!(db.save_budget_config("p1", "claude", &config).is_err());
 
@@ -738,6 +746,8 @@ fn save_validates_and_persists_config() {
         currency: None,
         limit_amount: Some("1000".to_string()),
         reset_period: None,
+        window_length: None,
+        window_unit: None,
     };
     assert!(db.save_budget_config("p1", "claude", &config).is_err());
 
@@ -748,6 +758,8 @@ fn save_validates_and_persists_config() {
         currency: None,
         limit_amount: Some("-5".to_string()),
         reset_period: None,
+        window_length: None,
+        window_unit: None,
     };
     assert!(db.save_budget_config("p1", "claude", &config).is_err());
     assert!(db.get_api_key_limit("p1", "claude").unwrap().is_none());
@@ -759,6 +771,8 @@ fn save_validates_and_persists_config() {
         currency: Some("CNY".to_string()),
         limit_amount: Some("50".to_string()),
         reset_period: None,
+        window_length: None,
+        window_unit: None,
     };
     let status = db.save_budget_config("p1", "claude", &config).unwrap();
     assert!(status.enabled);
@@ -774,6 +788,8 @@ fn save_validates_and_persists_config() {
         currency: Some("CNY".to_string()),
         limit_amount: Some("50".to_string()),
         reset_period: None,
+        window_length: None,
+        window_unit: None,
     };
     let status = db.save_budget_config("p1", "claude", &config).unwrap();
     assert!(!status.enabled);
@@ -790,6 +806,8 @@ fn save_validates_and_persists_config() {
         currency: Some("CNY".to_string()),
         limit_amount: Some("50".to_string()),
         reset_period: None,
+        window_length: None,
+        window_unit: None,
     };
     db.save_budget_config("p1", "claude", &config).unwrap();
     let new_row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
@@ -816,6 +834,8 @@ fn save_validates_and_persists_config() {
         currency: None,
         limit_amount: Some("1000".to_string()),
         reset_period: None,
+        window_length: None,
+        window_unit: None,
     };
     assert!(db.save_budget_config("p2", "claude", &config).is_err());
 }
@@ -919,6 +939,24 @@ fn limit_row_with_period(
 ) -> ApiKeyLimitRow {
     ApiKeyLimitRow {
         reset_period: period.to_string(),
+        usage_start_at,
+        ..limit_row(provider_id, fingerprint, true, "money", Some("USD"), amount)
+    }
+}
+
+/// 带自定义窗口的 limit 行（金额模式 USD）
+fn limit_row_with_custom_window(
+    provider_id: &str,
+    fingerprint: &str,
+    usage_start_at: i64,
+    length: i64,
+    unit: &str,
+    amount: &str,
+) -> ApiKeyLimitRow {
+    ApiKeyLimitRow {
+        reset_period: "custom".to_string(),
+        window_length: Some(length),
+        window_unit: Some(unit.to_string()),
         usage_start_at,
         ..limit_row(provider_id, fingerprint, true, "money", Some("USD"), amount)
     }
@@ -1122,6 +1160,8 @@ fn save_persists_and_validates_reset_period() {
         currency: Some("USD".to_string()),
         limit_amount: Some("10".to_string()),
         reset_period: None,
+        window_length: None,
+        window_unit: None,
     };
     db.save_budget_config("p1", "claude", &config).unwrap();
     let row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
@@ -1134,6 +1174,8 @@ fn save_persists_and_validates_reset_period() {
         currency: Some("USD".to_string()),
         limit_amount: Some("10".to_string()),
         reset_period: Some("weekly".to_string()),
+        window_length: None,
+        window_unit: None,
     };
     let status = db.save_budget_config("p1", "claude", &config).unwrap();
     assert_eq!(status.reset_period, "weekly");
@@ -1148,6 +1190,8 @@ fn save_persists_and_validates_reset_period() {
         currency: Some("USD".to_string()),
         limit_amount: Some("10".to_string()),
         reset_period: Some("yearly".to_string()),
+        window_length: None,
+        window_unit: None,
     };
     assert!(db.save_budget_config("p1", "claude", &config).is_err());
     let row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
@@ -1160,6 +1204,8 @@ fn save_persists_and_validates_reset_period() {
         currency: Some("USD".to_string()),
         limit_amount: Some("10".to_string()),
         reset_period: Some("daily".to_string()),
+        window_length: None,
+        window_unit: None,
     };
     db.save_budget_config("p1", "claude", &config).unwrap();
     let row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
@@ -1271,4 +1317,233 @@ fn fresh_schema_has_reset_period_default() {
         )
         .unwrap();
     assert_eq!(period, "never");
+}
+
+// ---------- V1.2.0 窗口语义与自定义时长 ----------
+
+#[test]
+fn enabling_limit_starts_window_at_now() {
+    // 用户诉求：打开选项后从当下开始计算，此前用量不并入
+    let db = Database::memory().unwrap();
+    // seed_limit 直接构造：enabled=false + 远古窗口锚点（1_000_000）
+    let fp = seed_limit(&db, "p1", false, "money", Some("USD"), "5");
+    // 旧用量 $99（远古窗口内）
+    insert_log(&db, "r-old", "p1", &fp, 1_000_100, 10, 10, "99.00");
+
+    let before = chrono::Utc::now().timestamp();
+    let config = UsageLimitConfig {
+        enabled: true,
+        limit_type: "money".to_string(),
+        currency: Some("USD".to_string()),
+        limit_amount: Some("5".to_string()),
+        reset_period: Some("never".to_string()),
+        ..Default::default()
+    };
+    db.save_budget_config("p1", "claude", &config).unwrap();
+    let after = chrono::Utc::now().timestamp();
+
+    let row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
+    assert!(
+        row.usage_start_at >= before && row.usage_start_at <= after,
+        "启用时窗口必须重置为当下（{before} <= {} <= {after}）",
+        row.usage_start_at
+    );
+    // 旧 $99 出窗：放行且已用为 0
+    assert!(db
+        .check_budget_before_forward("p1", "P1", "claude", &fp)
+        .is_ok());
+    let status = db.get_budget_status("p1", "claude").unwrap();
+    assert_eq!(status.used_money_usd, "0");
+}
+
+#[test]
+fn re_enabling_after_disable_restarts_window() {
+    let db = Database::memory().unwrap();
+    db.save_provider("claude", &claude_provider("p1", "sk-test-reenable-key"))
+        .unwrap();
+    let on = UsageLimitConfig {
+        enabled: true,
+        limit_type: "money".to_string(),
+        currency: Some("USD".to_string()),
+        limit_amount: Some("5".to_string()),
+        reset_period: Some("never".to_string()),
+        ..Default::default()
+    };
+    db.save_budget_config("p1", "claude", &on).unwrap();
+    // 关闭（保留窗口）
+    let off = UsageLimitConfig {
+        enabled: false,
+        ..on.clone()
+    };
+    db.save_budget_config("p1", "claude", &off).unwrap();
+    let mid = db
+        .get_api_key_limit("p1", "claude")
+        .unwrap()
+        .unwrap()
+        .usage_start_at;
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    // 重新打开：窗口必须从当下重新起算
+    db.save_budget_config("p1", "claude", &on).unwrap();
+    let row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
+    assert!(
+        row.usage_start_at > mid,
+        "关→开必须重置窗口（{} -> {}）",
+        mid,
+        row.usage_start_at
+    );
+}
+
+#[test]
+fn custom_window_rolls_from_anchor_by_hours() {
+    let db = Database::memory().unwrap();
+    let fp = seed_limit(&db, "p1", true, "money", Some("USD"), "5");
+    let now = chrono::Utc::now().timestamp();
+    // 启用锚点 1.5 小时前，窗长 1 小时 → 当前窗口起点 = 锚点 + 1h（30 分钟前）
+    let anchor = now - 5_400;
+    db.upsert_api_key_limit(&limit_row_with_custom_window(
+        "p1", &fp, anchor, 1, "hours", "5",
+    ))
+    .unwrap();
+    insert_log(&db, "r-old", "p1", &fp, anchor + 60, 10, 10, "99.00");
+    // 窗口内的用量：$1
+    insert_log(&db, "r-new", "p1", &fp, anchor + 3_600 + 60, 10, 10, "1.00");
+
+    let status = db.get_budget_status("p1", "claude").unwrap();
+    assert_eq!(status.reset_period, "custom");
+    assert_eq!(status.window_length, Some(1));
+    assert_eq!(status.window_unit.as_deref(), Some("hours"));
+    let effective = status.usage_start_at.unwrap();
+    assert!(
+        (effective - (anchor + 3_600)).abs() <= 2,
+        "有效起点应为锚点+1h：{effective} vs {}",
+        anchor + 3_600
+    );
+    assert_eq!(status.used_money_usd, "1.00", "窗口外 $99 不计入");
+    assert!(status.next_reset_at.unwrap() > now);
+
+    // guard 懒滚动持久化：旧 $99 出窗 → 放行，行窗口推进
+    assert!(db
+        .check_budget_before_forward("p1", "P1", "claude", &fp)
+        .is_ok());
+    let row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
+    assert_eq!(row.usage_start_at, effective, "guard 必须持久化滚动");
+}
+
+#[test]
+fn custom_window_days_math() {
+    let db = Database::memory().unwrap();
+    let fp = seed_limit(&db, "p1", true, "money", Some("USD"), "5");
+    let now = chrono::Utc::now().timestamp();
+    // 锚点 8 天前，窗长 7 天 → 当前窗口起点 = 锚点 + 7 天（1 天前）
+    let anchor = now - 8 * 86_400;
+    db.upsert_api_key_limit(&limit_row_with_custom_window(
+        "p1", &fp, anchor, 7, "days", "5",
+    ))
+    .unwrap();
+    let status = db.get_budget_status("p1", "claude").unwrap();
+    let effective = status.usage_start_at.unwrap();
+    assert!(
+        (effective - (anchor + 7 * 86_400)).abs() <= 2,
+        "7 天窗应从锚点+7天起：{effective}"
+    );
+    assert_eq!(status.next_reset_at.unwrap(), effective + 7 * 86_400);
+}
+
+#[test]
+fn custom_window_validation_on_save() {
+    let db = Database::memory().unwrap();
+    db.save_provider("claude", &claude_provider("p1", "sk-test-custom-window"))
+        .unwrap();
+
+    // custom 缺长度 → 拒绝
+    let base = UsageLimitConfig {
+        enabled: true,
+        limit_type: "money".to_string(),
+        currency: Some("USD".to_string()),
+        limit_amount: Some("10".to_string()),
+        reset_period: Some("custom".to_string()),
+        ..Default::default()
+    };
+    assert!(db.save_budget_config("p1", "claude", &base).is_err());
+
+    // custom 单位非法 → 拒绝
+    let config = UsageLimitConfig {
+        window_length: Some(3),
+        window_unit: Some("weeks".to_string()),
+        ..base.clone()
+    };
+    assert!(db.save_budget_config("p1", "claude", &config).is_err());
+
+    // custom 长度 0 / 超上限 → 拒绝
+    for bad_length in [0, -5, MAX_WINDOW_LENGTH + 1] {
+        let config = UsageLimitConfig {
+            window_length: Some(bad_length),
+            window_unit: Some("hours".to_string()),
+            ..base.clone()
+        };
+        assert!(db.save_budget_config("p1", "claude", &config).is_err());
+    }
+
+    // 非 custom 携带窗口字段 → 拒绝
+    let config = UsageLimitConfig {
+        reset_period: Some("daily".to_string()),
+        window_length: Some(3),
+        window_unit: Some("hours".to_string()),
+        ..base.clone()
+    };
+    assert!(db.save_budget_config("p1", "claude", &config).is_err());
+
+    // 合法 custom 入库
+    let config = UsageLimitConfig {
+        window_length: Some(6),
+        window_unit: Some("hours".to_string()),
+        ..base.clone()
+    };
+    let status = db.save_budget_config("p1", "claude", &config).unwrap();
+    assert_eq!(status.reset_period, "custom");
+    assert_eq!(status.window_length, Some(6));
+    assert_eq!(status.window_unit.as_deref(), Some("hours"));
+    let row = db.get_api_key_limit("p1", "claude").unwrap().unwrap();
+    assert_eq!(row.window_length, Some(6));
+    assert_eq!(row.window_unit.as_deref(), Some("hours"));
+}
+
+#[test]
+fn daily_enable_counts_from_now_not_boundary() {
+    // 回归用户反馈：开启 daily 限额后应从开启时刻起算，
+    // 今天早些时候（边界之后、开启之前）的用量不并入
+    let db = Database::memory().unwrap();
+    let fp = seed_limit(&db, "p1", false, "money", Some("USD"), "5");
+    let now = chrono::Utc::now().timestamp();
+    let today_start = ResetPeriod::Daily.current_period_start(now).unwrap();
+    // 今天零点后的旧用量 $99（在「今天」这个日历周期内，但在开启之前）
+    insert_log(
+        &db,
+        "r-today-old",
+        "p1",
+        &fp,
+        today_start + 60,
+        10,
+        10,
+        "99.00",
+    );
+
+    let config = UsageLimitConfig {
+        enabled: true,
+        limit_type: "money".to_string(),
+        currency: Some("USD".to_string()),
+        limit_amount: Some("5".to_string()),
+        reset_period: Some("daily".to_string()),
+        ..Default::default()
+    };
+    db.save_budget_config("p1", "claude", &config).unwrap();
+
+    // 开启后窗口 = 当下：今天早些的 $99 不计入；下一个零点起按日滚动
+    assert!(db
+        .check_budget_before_forward("p1", "P1", "claude", &fp)
+        .is_ok());
+    let status = db.get_budget_status("p1", "claude").unwrap();
+    assert_eq!(status.used_money_usd, "0");
+    assert!(status.usage_start_at.unwrap() >= today_start + 60);
 }

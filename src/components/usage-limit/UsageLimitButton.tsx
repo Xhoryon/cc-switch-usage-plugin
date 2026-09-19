@@ -1,5 +1,5 @@
-import { memo } from "react";
-import { Gauge } from "lucide-react";
+import { memo, useCallback, useState } from "react";
+import { Eye, EyeOff, Gauge, Timer } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
@@ -124,6 +124,33 @@ function UsageLimitButtonInner({
   const state: UsageLimitState = status?.state ?? "off";
   const summary = status ? budgetSummary(status) : undefined;
 
+  // 卡片徽标显示开关（V1.2.0）：按 provider 持久化在 localStorage
+  const storageKey = badgeStorageKey(appId, providerId);
+  const [showBadge, setShowBadge] = useState(() => {
+    try {
+      return window.localStorage.getItem(storageKey) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleBadge = useCallback(() => {
+    setShowBadge((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(storageKey, next ? "1" : "0");
+      } catch {
+        // localStorage 不可用时仅内存态生效
+      }
+      return next;
+    });
+  }, [storageKey]);
+
+  const percent =
+    status?.enabled && status.percentUsed != null
+      ? Number(status.percentUsed)
+      : null;
+  const badgeVisible = showBadge && percent != null && Number.isFinite(percent);
+
   let title = t("usageLimit.title");
   if (status) {
     switch (state) {
@@ -146,41 +173,104 @@ function UsageLimitButtonInner({
 
   return (
     <TooltipProvider delayDuration={250}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={onOpen}
-            aria-label={t("usageLimit.title")}
-            className={cn(
-              "h-8 w-8 p-1",
-              state === "off" && "text-muted-foreground hover:text-foreground",
-              state === "active" && "text-emerald-600 dark:text-emerald-400",
-              state === "warning" && "text-amber-600 dark:text-amber-400",
-              state === "exhausted" &&
-                "text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300",
-            )}
-          >
-            <Gauge className="h-4 w-4" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1.5">
+        {badgeVisible && (
           <span
-            aria-hidden="true"
-            className={cn(
-              "h-1.5 w-1.5 rounded-full",
-              state === "off" && "bg-muted-foreground",
-              state === "active" && "bg-emerald-400",
-              state === "warning" && "bg-amber-400",
-              state === "exhausted" && "bg-red-400",
+            className="flex items-center gap-1 text-xs tabular-nums"
+            data-testid="usage-limit-card-badge"
+          >
+            <span
+              className={cn(
+                "font-medium",
+                state === "exhausted" && "text-red-600 dark:text-red-400",
+                state === "warning" && "text-amber-600 dark:text-amber-400",
+                (state === "active" || state === "off") &&
+                  "text-emerald-600 dark:text-emerald-400",
+              )}
+            >
+              {percent!.toFixed(0)}%
+            </span>
+            {status?.nextResetAt != null && (
+              <span className="flex items-center gap-0.5 text-muted-foreground">
+                <Timer className="h-3 w-3" aria-hidden="true" />
+                {formatDurationUntil(status.nextResetAt)}
+              </span>
             )}
-          />
-          {title}
-        </TooltipContent>
-      </Tooltip>
+          </span>
+        )}
+        <Button
+          size="icon"
+          variant="ghost"
+          onClick={toggleBadge}
+          aria-pressed={showBadge}
+          aria-label={
+            showBadge
+              ? t("usageLimit.hideFromCard")
+              : t("usageLimit.showOnCard")
+          }
+          className="h-8 w-8 p-1 text-muted-foreground hover:text-foreground"
+        >
+          {showBadge ? (
+            <Eye className="h-4 w-4" />
+          ) : (
+            <EyeOff className="h-4 w-4" />
+          )}
+        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={onOpen}
+              aria-label={t("usageLimit.title")}
+              className={cn(
+                "h-8 w-8 p-1",
+                state === "off" &&
+                  "text-muted-foreground hover:text-foreground",
+                state === "active" && "text-emerald-600 dark:text-emerald-400",
+                state === "warning" && "text-amber-600 dark:text-amber-400",
+                state === "exhausted" &&
+                  "text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300",
+              )}
+            >
+              <Gauge className="h-4 w-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent className="flex items-center gap-1.5">
+            <span
+              aria-hidden="true"
+              className={cn(
+                "h-1.5 w-1.5 rounded-full",
+                state === "off" && "bg-muted-foreground",
+                state === "active" && "bg-emerald-400",
+                state === "warning" && "bg-amber-400",
+                state === "exhausted" && "bg-red-400",
+              )}
+            />
+            {title}
+          </TooltipContent>
+        </Tooltip>
+      </div>
     </TooltipProvider>
   );
 }
+
+/** 距下次重置的紧凑时长：38m / 5h12m / 2d4h（<1m 显示 <1m） */
+export function formatDurationUntil(
+  targetEpochSeconds: number,
+  nowEpochSeconds: number = Date.now() / 1000,
+): string {
+  const secs = Math.max(0, Math.floor(targetEpochSeconds - nowEpochSeconds));
+  if (secs < 60) return "<1m";
+  const m = Math.floor((secs % 3600) / 60);
+  const h = Math.floor((secs % 86400) / 3600);
+  const d = Math.floor(secs / 86400);
+  if (d > 0) return `${d}d${h}h`;
+  if (h > 0) return m > 0 ? `${h}h${m}m` : `${h}h`;
+  return `${m}m`;
+}
+
+const badgeStorageKey = (appId: string, providerId: string) =>
+  `ccswitch.usageBadge.${appId}.${providerId}`;
 
 export const UsageLimitButton = memo(UsageLimitButtonImpl);

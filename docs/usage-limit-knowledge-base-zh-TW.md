@@ -2,7 +2,7 @@
 
 # 使用限額（Budget Limit）知識庫
 
-> 適用版本：**V1.1.1**（公開發布，2026-09-18；安裝包修復版，功能與 V1.1.0
+> 適用版本：**V1.2.0**（公開發布，2026-09-18；安裝包修復版，功能與 V1.1.0
 > 一致，基座 CC Switch 3.20.3）。各迭代明細見 `docs/development_log.md`
 > 對應條目。本文是整合視圖，面向後續維護者，回答「它是什麼、為什麼這樣
 > 設計、改哪裡要小心什麼」。
@@ -78,6 +78,8 @@ CREATE TABLE api_key_limits (
     limit_amount           TEXT NOT NULL,      -- 金額十進位字串 / token 正整數字串
     usage_start_at         INTEGER NOT NULL,   -- 統計視窗起點（unix 秒）
     reset_period           TEXT NOT NULL DEFAULT 'never',  -- V1.0.1
+    window_length          INTEGER,            -- V1.2.0: custom window length
+    window_unit            TEXT,               -- V1.2.0: hours | days
     created_at             INTEGER NOT NULL,
     updated_at             INTEGER NOT NULL,
     PRIMARY KEY (provider_id, app_type),
@@ -162,39 +164,37 @@ WHERE provider_id = ? AND app_type = ?
 - **Overshoot 是設計內行為**：已允許發出的請求允許完成，usage 在回應
   結束後落庫，最後一個請求可能小幅超出。禁止中斷進行中的 SSE/串流。
 
-### 4.3 重置週期與懶滾動（V1.0.1）
+### 4.3 重置週期與懶滾動（V1.0.1 引入，V1.2.0 重做語義）
 
-`ResetPeriod::current_period_start(now)` 按**本地時區**給出目前週期邊界：
+**視窗起點（V1.2.0 起）**：首次建立、換 Key、**關→開**、**啟用狀態下改變重置設定**時，`usage_start_at` 一律設為「當下」——打開選項後開始計算，開啟前的歷史用量不併入。儲存路徑不再做日曆回對齊（V1.0.1 的 daily 回對齊行為已移除）。
 
-| 週期 | 邊界 | 例（2026-09-18 週五 15:27） |
+`ResetPeriod`：
+| 週期 | 滾動方式 | 例（2026-09-18 週五 15:27 啟用） |
 | --- | --- | --- |
-| never | 無 | — |
-| hourly | 本地整點 | 15:00 |
-| daily | 本地零點 | 09-18 00:00 |
-| weekly | 本地週一零點（ISO 週） | 09-14 00:00 |
-| monthly | 本地 1 日零點 | 09-01 00:00 |
+| never | 不滾動，僅手動重置 | — |
+| hourly | 本地整點邊界 | 15:00 起算，16:00 重置 |
+| daily | 本地零點邊界 | 15:00 起算，次日 00:00 重置 |
+| weekly | 本地週一零點（ISO 週） | 起算至下週一 |
+| monthly | 本地 1 日零點 | 起算至下月 1 日 |
+| **custom**（V1.2.0） | **錨點 + 整數倍窗長**（N 小時/天） | 15:27 起算，每 N 小時/天滾動 |
 
-有效視窗起點 = `max(usage_start_at, 目前週期邊界)`，三個應用點：
+- 日曆週期有效起點 = `max(usage_start_at, 目前日曆邊界)`（啟用後未到下個
+  邊界時保持啟用時刻，跨邊界後滾動）。
+- custom 有效起點 = `錨點 + floor((now-錨點)/窗長) × 窗長`；窗長存於
+  `window_length`（1~10000）+ `window_unit`（hours/days），僅 custom 可攜帶。
+- 統一入口 `effective_window_start(row, now)` / `next_window_reset(...)`。
 
+三個應用點:
 1. **guard（寫路徑）**：先滾動後判定；滾動以一列 UPDATE 持久化
    （best-effort，失敗僅告警，判定仍按新起點）。被限額的視窗跨過邊界後
    在同一次 guard 呼叫內恢復放行。
-2. **status（讀路徑）**：同樣即時計算並回傳 `resetPeriod` / `nextResetAt`
-   （下一次邊界），但**不回寫**——讀介面保持無副作用。
-3. **save（寫路徑）**：週期值缺省視為 `never`，非法值拒絕入庫；若原視窗
-   早於新週期邊界（如 never→daily 且視窗在昨天）立即對齊到邊界；原視窗
-   已在本週期內則**不回退**（保守保留本期已統計用量）。
+2. **status（讀路徑）**：同樣即時計算並回傳 `resetPeriod` / `windowLength` /
+   `windowUnit` / `nextResetAt`，但**不回寫**——讀介面保持無副作用。
+3. **save（寫路徑，V1.2.0）**：週期值缺省視為 `never`，非法值拒絕入庫；
+   視窗起點按上方四種情形設定（關→開與重置設定變更 → 當下），不再回對齊
+   日曆邊界。custom 的長度/單位強校驗（1~10000、hours/days），非 custom
+   不得攜帶視窗欄位。
 
-懶滾動 vs 定時器：應用關閉期間跨過的邊界在下次啟動後照常生效；無並行
-定時任務；判定本來就在 DB Mutex 下序列化，滾動只是一列 UPDATE。
-
-DST 處理（與 `usage_rollup::compute_local_midnight_cutoff` 同款）：
-牆鐘歧義（fall-back 重複小時）取較早映射；不存在的牆鐘時刻（spring-forward
-gap）順延一小時重試；最終 UTC 解釋兜底。`next_period_start` 額外要求結果
-嚴格晚於 now，否則回傳 None（寧可不展示「下次重置」）。
-
-手動重置與週期正交：手動重置把視窗推進到當下立即清零；下個週期邊界仍
-照常滾動。重置**永不刪除** `proxy_request_logs` 歷史列。
 
 ### 4.4 並行模型
 
@@ -228,11 +228,14 @@ overshoot 破壞轉發並行。週期滾動寫在同一 Mutex 下，無額外競
 - enforcement 三態：`active` / `proxy_disabled`（該應用代理接管未開啟，
   顯示警示條）/ `unsupported_credential`（OAuth，禁止設定）。
 - Dialog 結構：關閉態只有開關列（簡潔）；開啟後同 Dialog 展開（不彈二級
-  視窗）：限制方式 → 幣種/匯率（money）/ Token 輸入 → **重置週期五段選擇器
-  （V1.0.1）** → enforcement/未知定價警示 → 用量/剩餘/進度 →
+  視窗）：限制方式 → 幣種/匯率（money）/ Token 輸入 → **重置週期六段選擇器
+  （3×2，V1.2.0 起含自訂）**→ 自訂視窗長度輸入 + 小時/天分段 → enforcement/未知定價警示 → 用量/剩餘/進度 →
   [重置使用量] [取消] [儲存]。
 - 「下次重置：<本地時間>」僅在所選週期與**已儲存**設定一致時展示，
   避免正在切換時顯示過期邊界。
+- **卡片用量徽標（V1.2.0）**：儀表板圖示旁新增顯示開關（Eye/EyeOff，按
+  provider 存 localStorage——僅 UI 偏好）；開啟後顯示 `{percent}%`
+  （狀態著色）+ `⏱{距下次重置}`；限額關閉或百分比缺失時自動隱藏。
 - 即時重新整理：`refetchOnMount: "always"` + `useUsageLimitEventBridge` 監聽
   `usage-log-recorded` 事件 invalidate `usage-limit` 命名空間（請求記帳後
   卡片/Dialog 即時更新），mutation 成功後 invalidate 對應 query；無
@@ -450,3 +453,4 @@ JPY 匯率）。該幣種已儲存的匯率會自動回填；首次使用該幣�
 | V1.0.2 | 2026-09-18 | 金額限額擴展至 5 幣種（USD/CNY/EUR/JPY/GBP）+ 各幣種人工匯率、匯率命令泛化、schema v22（移除 currency CHECK）、幣種符號後綴等 UI 打磨 |
 | **V1.1.0** | 2026-09-18 | **公開發布**：V1.0 + V1.0.1 + V1.0.2 的全部內容作為一個版本發布（基座 CC Switch 3.20.3），即 v1.0.0 之後的第一個公開版本 |
 | **V1.1.1** | 2026-09-18 | **安裝包修復**：應用套件完整 ad-hoc 簽章（修復「檔案已損毀」與首次拖拽不註冊）、DMG 移除雜散 `.VolumeIcon.icns`、README/發布說明補充首次開啟放行指引。功能與 V1.1.0 一致 |
+| **V1.2.0** | 2026-09-19 | 視窗語義重做（關→開/重置設定變更從當下起算，移除日曆回對齊）+ 自訂滾動視窗（N 小時/天，schema v23）+ 對話框滾動/拖動修復 + 卡片用量徽標 |

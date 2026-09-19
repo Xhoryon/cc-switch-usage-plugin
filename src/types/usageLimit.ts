@@ -31,7 +31,12 @@ export type UsageLimitResetPeriod =
   | "hourly"
   | "daily"
   | "weekly"
-  | "monthly";
+  | "monthly"
+  /** 自定义滚动窗口：从开启/保存时刻起每 N 小时/天重置（V1.2.0） */
+  | "custom";
+
+/** 自定义窗口单位 */
+export type UsageLimitWindowUnit = "hours" | "days";
 
 /** enforcement 能力：Proxy 是否真的在该 Provider 的请求路径上 */
 export type UsageLimitEnforcement =
@@ -49,8 +54,12 @@ export interface UsageLimitStatus {
   limitAmount?: string | null;
   /** 预算统计窗口起点（unix 秒；周期重置下为对齐周期边界后的有效起点） */
   usageStartAt?: number | null;
-  /** 重置周期（V1.0.1），缺省视为 never */
+  /** 重置周期（V1.0.1），缺省视为 never；V1.2.0 起支持 custom */
   resetPeriod?: UsageLimitResetPeriod | null;
+  /** 自定义窗口长度（仅 custom 时非空） */
+  windowLength?: number | null;
+  /** 自定义窗口单位（仅 custom 时非空） */
+  windowUnit?: UsageLimitWindowUnit | null;
   /** 下一次周期重置时间（unix 秒）；never 时为 null */
   nextResetAt?: number | null;
   /** 窗口内已用金额（USD 原值，十进制字符串） */
@@ -82,6 +91,10 @@ export interface UsageLimitConfig {
   currency?: UsageLimitCurrency | null;
   /** 金额（十进制字符串）或 token 数（正整数字符串） */
   limitAmount?: string | null;
-  /** 重置周期（V1.0.1），始终显式提交 */
+  /** 重置周期（V1.0.1），始终显式提交；V1.2.0 起支持 custom */
   resetPeriod: UsageLimitResetPeriod;
+  /** 自定义窗口长度（仅 custom 时提交） */
+  windowLength?: number | null;
+  /** 自定义窗口单位（仅 custom 时提交） */
+  windowUnit?: UsageLimitWindowUnit | null;
 }

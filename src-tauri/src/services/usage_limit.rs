@@ -69,6 +69,10 @@ impl LimitType {
 ///   本地时区边界（整点 / 零点 / 周一零点 / 每月 1 日零点），边界一过旧用量
 ///   自动不再计入；实现是「懒滚动」——判定与状态查询时按当前时间即时计算，
 ///   不依赖后台定时器，应用跨天未运行也不会漏掉重置。
+/// - `Custom`（V1.2.0）：自定义滚动窗口——从「开启/保存时刻」起算，每
+///   N 小时 / N 天自动重置（长度存于行上的 window_length/window_unit）。
+///   与日历周期不同，Custom 不对齐边界：窗口起点永远是启用锚点 + 整数倍
+///   窗长，开启前的历史用量天然出窗。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetPeriod {
     Never,
@@ -76,6 +80,7 @@ pub enum ResetPeriod {
     Daily,
     Weekly,
     Monthly,
+    Custom,
 }
 
 impl ResetPeriod {
@@ -86,6 +91,7 @@ impl ResetPeriod {
             ResetPeriod::Daily => "daily",
             ResetPeriod::Weekly => "weekly",
             ResetPeriod::Monthly => "monthly",
+            ResetPeriod::Custom => "custom",
         }
     }
 
@@ -98,15 +104,18 @@ impl ResetPeriod {
             "daily" => Some(ResetPeriod::Daily),
             "weekly" => Some(ResetPeriod::Weekly),
             "monthly" => Some(ResetPeriod::Monthly),
+            "custom" => Some(ResetPeriod::Custom),
             _ => None,
         }
     }
 
-    /// 当前所在周期的本地时区起点（unix 秒）；`Never` 返回 None。
+    /// 当前所在周期的本地时区起点（unix 秒）；`Never` / `Custom` 返回 None
+    /// （Custom 的窗口起点依赖行上的启用锚点与窗长，见
+    /// [`effective_window_start`]）。
     pub fn current_period_start(self, now: i64) -> Option<i64> {
         let dt = local_datetime(now)?;
         let naive = match self {
-            ResetPeriod::Never => return None,
+            ResetPeriod::Never | ResetPeriod::Custom => return None,
             ResetPeriod::Hourly => dt.date_naive().and_hms_opt(dt.hour(), 0, 0)?,
             ResetPeriod::Daily => dt.date_naive().and_hms_opt(0, 0, 0)?,
             ResetPeriod::Weekly => {
@@ -120,12 +129,14 @@ impl ResetPeriod {
         Some(local_timestamp(naive))
     }
 
-    /// 下一个周期边界（unix 秒），供状态展示「下次重置」；`Never` 返回 None。
-    /// 防御性要求结果必须严格晚于 now（DST 回退等墙钟歧义下宁可不展示）。
+    /// 下一个周期边界（unix 秒），供状态展示「下次重置」；`Never` / `Custom`
+    /// 返回 None（Custom 的下次重置 = 当前窗口起点 + 窗长，同样在
+    /// [`effective_window_start`] 一并计算）。防御性要求结果必须严格晚于
+    /// now（DST 回退等墙钟歧义下宁可不展示）。
     pub fn next_period_start(self, now: i64) -> Option<i64> {
         let dt = local_datetime(now)?;
         let naive = match self {
-            ResetPeriod::Never => return None,
+            ResetPeriod::Never | ResetPeriod::Custom => return None,
             ResetPeriod::Hourly => {
                 dt.date_naive().and_hms_opt(dt.hour(), 0, 0)? + chrono::Duration::hours(1)
             }
@@ -149,6 +160,78 @@ impl ResetPeriod {
         };
         let next = local_timestamp(naive);
         (next > now).then_some(next)
+    }
+}
+
+/// 自定义窗口长度（秒）：window_length + window_unit → 秒数。
+/// 非法组合（长度 ≤ 0、未知单位、超大体量）返回 None，由调用方兜底。
+pub const MAX_WINDOW_LENGTH: i64 = 10_000;
+
+fn custom_window_seconds(window_length: Option<i64>, window_unit: Option<&str>) -> Option<i64> {
+    let length = window_length?;
+    if length <= 0 || length > MAX_WINDOW_LENGTH {
+        return None;
+    }
+    match window_unit? {
+        "hours" => Some(length * 3_600),
+        "days" => Some(length * 86_400),
+        _ => None,
+    }
+}
+
+/// 有效统计窗口起点（V1.2.0 统一入口）：
+///
+/// - never：启用锚点本身（不滚动）
+/// - 日历周期：max(启用锚点, 当前日历边界)——启用时刻早于边界时从启用时刻
+///   起算（不回吞开启前的用量），跨过下一个边界后照常滚动
+/// - custom：启用锚点 + floor((now - 锚点)/窗长) × 窗长——严格按启用时刻
+///   滚动，与日历无关；锚点晚于 now（时钟回拨）时夹到锚点。
+///   窗长/单位非法（历史脏数据）时回退锚点并告警。
+fn effective_window_start(row: &ApiKeyLimitRow, now: i64) -> i64 {
+    let period = parse_reset_period(&row.reset_period);
+    match period {
+        ResetPeriod::Never => row.usage_start_at,
+        ResetPeriod::Custom => {
+            let Some(window_seconds) =
+                custom_window_seconds(row.window_length, row.window_unit.as_deref())
+            else {
+                log::warn!(
+                    "[Budget] 自定义窗口配置非法（length={:?} unit={:?}），按不滚动处理",
+                    row.window_length,
+                    row.window_unit
+                );
+                return row.usage_start_at;
+            };
+            let anchor = row.usage_start_at;
+            if now <= anchor {
+                return anchor;
+            }
+            let elapsed = now - anchor;
+            let k = elapsed / window_seconds;
+            anchor + k * window_seconds
+        }
+        _ => {
+            let boundary = period.current_period_start(now);
+            match boundary {
+                Some(b) if b > row.usage_start_at => b,
+                _ => row.usage_start_at,
+            }
+        }
+    }
+}
+
+/// 下次重置时刻（V1.2.0 统一入口）：never → None；custom → 当前窗口起点 +
+/// 窗长；日历周期 → 下一个日历边界。
+fn next_window_reset(row: &ApiKeyLimitRow, now: i64, effective_start: i64) -> Option<i64> {
+    match parse_reset_period(&row.reset_period) {
+        ResetPeriod::Never => None,
+        ResetPeriod::Custom => {
+            let window_seconds =
+                custom_window_seconds(row.window_length, row.window_unit.as_deref())?;
+            let next = effective_start + window_seconds;
+            (next > now).then_some(next)
+        }
+        period => period.next_period_start(now),
     }
 }
 
@@ -266,7 +349,7 @@ pub struct BudgetRejection {
 }
 
 /// 前端提交的限额配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageLimitConfig {
     pub enabled: bool,
@@ -276,9 +359,15 @@ pub struct UsageLimitConfig {
     pub currency: Option<String>,
     /// 金额（> 0 的十进制字符串）或 token 数（正整数纯数字字符串）
     pub limit_amount: Option<String>,
-    /// "never" | "hourly" | "daily" | "weekly" | "monthly"；缺省视为 never
+    /// "never" | "hourly" | "daily" | "weekly" | "monthly" | "custom"；缺省视为 never
     #[serde(default)]
     pub reset_period: Option<String>,
+    /// 自定义窗口长度（仅 reset_period = "custom"；> 0 整数）
+    #[serde(default)]
+    pub window_length: Option<i64>,
+    /// 自定义窗口单位："hours" | "days"
+    #[serde(default)]
+    pub window_unit: Option<String>,
 }
 
 /// enforcement 能力：Proxy 是否真的在该 Provider 的请求路径上
@@ -315,8 +404,11 @@ pub struct BudgetStatus {
     pub limit_amount: Option<String>,
     /// 统计窗口起点（unix 秒；周期重置配置下为对齐周期边界后的有效起点）
     pub usage_start_at: Option<i64>,
-    /// "never" | "hourly" | "daily" | "weekly" | "monthly"
+    /// "never" | "hourly" | "daily" | "weekly" | "monthly" | "custom"
     pub reset_period: String,
+    /// 自定义窗口长度与单位（仅 custom 时非空）
+    pub window_length: Option<i64>,
+    pub window_unit: Option<String>,
     /// 下一次周期重置时间（unix 秒）；never 时为 None
     pub next_reset_at: Option<i64>,
     /// 窗口内已用金额（USD 原值，十进制字符串）
@@ -589,16 +681,15 @@ impl Database {
             }
         }
 
-        // 周期重置（V1.0.1 懒滚动）：窗口起点越过周期边界 → 推进到边界。
-        // 持久化失败不影响本次判定（状态查询会按相同规则即时计算）。
-        let period = parse_reset_period(&row.reset_period);
-        if let Some(boundary) = period.current_period_start(now) {
-            if boundary > effective_start {
-                if let Err(e) = self.reset_api_key_limit_window(provider_id, app_type, boundary) {
-                    log::warn!("[Budget] 周期窗口滚动持久化失败（判定按边界继续）: {e}");
-                }
-                effective_start = boundary;
+        // 周期重置（V1.2.0 统一懒滚动）：日历周期对齐边界、custom 按启用锚点
+        // 滚动；有效起点越过持久化窗口 → 推进。持久化失败不影响本次判定
+        // （状态查询会按相同规则即时计算）。
+        let rolled = effective_window_start(&row, now);
+        if rolled > effective_start {
+            if let Err(e) = self.reset_api_key_limit_window(provider_id, app_type, rolled) {
+                log::warn!("[Budget] 周期窗口滚动持久化失败（判定按边界继续）: {e}");
             }
+            effective_start = rolled;
         }
 
         let limit = match self.evaluate_budget(&row, fingerprint, effective_start) {
@@ -734,6 +825,8 @@ impl Database {
             limit_amount: None,
             usage_start_at: None,
             reset_period: ResetPeriod::Never.as_str().to_string(),
+            window_length: None,
+            window_unit: None,
             next_reset_at: None,
             used_money_usd: "0".to_string(),
             used_money_in_currency: None,
@@ -755,16 +848,15 @@ impl Database {
         status.currency = row.currency.clone();
         status.limit_amount = Some(row.limit_amount.clone());
 
-        // 周期重置（V1.0.1）：读接口按当前时间即时计算有效窗口（懒滚动语义
+        // 周期重置（V1.2.0）：读接口按当前时间即时计算有效窗口（懒滚动语义
         // 与 guard 一致，但保持无副作用——持久化推进由 guard / 保存动作完成）
         let now = chrono::Utc::now().timestamp();
         let period = parse_reset_period(&row.reset_period);
         status.reset_period = period.as_str().to_string();
-        status.next_reset_at = period.next_period_start(now);
-        let effective_start = period
-            .current_period_start(now)
-            .filter(|boundary| *boundary > row.usage_start_at)
-            .unwrap_or(row.usage_start_at);
+        status.window_length = row.window_length;
+        status.window_unit = row.window_unit.clone();
+        let effective_start = effective_window_start(&row, now);
+        status.next_reset_at = next_window_reset(&row, now, effective_start);
         status.usage_start_at = Some(effective_start);
 
         let Some(fingerprint) = fingerprint else {
@@ -869,14 +961,14 @@ impl Database {
 
     /// 保存限额配置（新建 / 修改 / 启停共用）。
     ///
-    /// - 校验金额/Token 输入与重置周期，非法数据不进 SQLite
-    /// - 保存时以「当前 credential 指纹」落库；指纹变化视为换 Key，
-    ///   统计窗口重置为当前时间（与转发路径 guard 的重绑语义一致）
+    /// - 校验金额/Token 输入、重置周期与自定义窗口字段，非法数据不进 SQLite
+    /// - 保存时以「当前 credential 指纹」落库；指纹变化视为换 Key
+    /// - **V1.2.0 窗口语义**：首次创建、换 Key、关→开、启用状态下改变重置
+    ///   配置（周期/窗长/单位）→ 统计窗口一律从「现在」起算，开启前的历史
+    ///   用量不并入（打开选项后开始计算）。仅改金额/开关不重置窗口
     /// - 关闭（enabled=false）只改开关，配置与历史窗口全部保留
-    /// - 首次创建时 usage_start_at = now；再次打开沿用原窗口（可用
-    ///   reset_budget_usage 显式重置）
-    /// - 配置了周期重置时，窗口起点对齐到当前周期边界（如改为「每天」
-    ///   则立即从今天零点起统计），语义与 guard 懒滚动一致
+    /// - 日历周期的前向滚动由 guard / status 的 effective_window_start
+    ///   即时处理（max(锚点, 边界)），保存时不再回对齐历史边界
     pub fn save_budget_config(
         &self,
         provider_id: &str,
@@ -935,15 +1027,55 @@ impl Database {
                 .ok_or_else(|| AppError::InvalidInput(format!("重置周期非法: {raw}")))?,
         };
 
+        // 自定义窗口字段校验：仅 custom 允许携带，且长度/单位必须合法
+        let window_length: Option<i64>;
+        let window_unit: Option<String>;
+        if reset_period == ResetPeriod::Custom {
+            let length = config.window_length.unwrap_or(0);
+            if length <= 0 || length > MAX_WINDOW_LENGTH {
+                return Err(AppError::InvalidInput(
+                    "自定义窗口长度必须是 1 ~ 10000 的整数".to_string(),
+                ));
+            }
+            let unit = config.window_unit.as_deref().unwrap_or("");
+            if unit != "hours" && unit != "days" {
+                return Err(AppError::InvalidInput(
+                    "自定义窗口单位必须是 hours 或 days".to_string(),
+                ));
+            }
+            window_length = Some(length);
+            window_unit = Some(unit.to_string());
+        } else {
+            if config.window_length.is_some() || config.window_unit.is_some() {
+                return Err(AppError::InvalidInput(
+                    "仅自定义周期（custom）可以携带窗口长度与单位".to_string(),
+                ));
+            }
+            window_length = None;
+            window_unit = None;
+        }
+
         let now = chrono::Utc::now().timestamp();
         let existing = self.get_api_key_limit(provider_id, app_type)?;
 
-        let (mut usage_start_at, created_at) = match &existing {
+        // V1.2.0 窗口语义：以下情况统计窗口一律从「现在」起算——
+        // ① 首次创建；② 换 Key；③ 关→开（打开选项后开始计算，不回吞
+        // 开启前的用量）；④ 启用状态下改变重置配置（周期/窗长/单位切换，
+        // 旧窗口口径与新口径不可混算）。
+        let window_config_changed = match &existing {
+            Some(existing) => {
+                existing.reset_period != reset_period.as_str()
+                    || existing.window_length != window_length
+                    || existing.window_unit.as_deref() != window_unit.as_deref()
+            }
+            None => true,
+        };
+        let (usage_start_at, created_at) = match &existing {
             None => (now, now),
             Some(existing) => {
-                // 换 Key：窗口重置；否则沿用原窗口（关→开不丢历史进度）
                 let rotated = existing.credential_fingerprint != fingerprint;
-                let start = if rotated {
+                let re_enabled = !existing.enabled && config.enabled;
+                let start = if rotated || re_enabled || (config.enabled && window_config_changed) {
                     now
                 } else {
                     existing.usage_start_at
@@ -952,13 +1084,8 @@ impl Database {
             }
         };
 
-        // 周期窗口对齐：配置了周期重置且原窗口早于当前周期边界（例如从
-        // never 改为 daily）→ 从边界起统计，旧周期的用量不再计入
-        if let Some(boundary) = reset_period.current_period_start(now) {
-            if boundary > usage_start_at {
-                usage_start_at = boundary;
-            }
-        }
+        // 此处不做日历边界对齐：日历周期的前向滚动由 guard / status 的
+        // effective_window_start（max(锚点, 边界)）即时处理。
 
         self.upsert_api_key_limit(&ApiKeyLimitRow {
             provider_id: provider_id.to_string(),
@@ -970,6 +1097,8 @@ impl Database {
             limit_amount,
             usage_start_at,
             reset_period: reset_period.as_str().to_string(),
+            window_length,
+            window_unit,
             created_at,
             updated_at: now,
         })?;

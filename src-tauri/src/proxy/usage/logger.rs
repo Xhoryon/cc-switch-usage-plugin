@@ -896,6 +896,8 @@ mod tests {
             limit_amount: "1000".to_string(),
             usage_start_at: 0,
             reset_period: "never".to_string(),
+            window_length: None,
+            window_unit: None,
             created_at: 0,
             updated_at: 0,
         })?;

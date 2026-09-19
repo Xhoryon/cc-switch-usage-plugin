@@ -380,6 +380,8 @@ impl Database {
                 limit_amount TEXT NOT NULL,
                 usage_start_at INTEGER NOT NULL,
                 reset_period TEXT NOT NULL DEFAULT 'never',
+                window_length INTEGER,
+                window_unit TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY (provider_id, app_type),
@@ -628,6 +630,11 @@ impl Database {
                         log::info!("迁移数据库从 v21 到 v22（限额表移除币种约束，多币种支持）");
                         Self::migrate_v21_to_v22(conn)?;
                         Self::set_user_version(conn, 22)?;
+                    }
+                    22 => {
+                        log::info!("迁移数据库从 v22 到 v23（限额表添加自定义窗口列）");
+                        Self::migrate_v22_to_v23(conn)?;
+                        Self::set_user_version(conn, 23)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1819,6 +1826,20 @@ impl Database {
         )
         .map_err(|e| AppError::Database(format!("v22 重命名限额表失败: {e}")))?;
         log::info!("api_key_limits 已重建：currency CHECK 约束移除（多币种支持）");
+        Ok(())
+    }
+
+    /// v22 -> v23 迁移：`api_key_limits` 添加自定义窗口列（V1.2.0）
+    ///
+    /// `window_length` + `window_unit`（'hours' | 'days'）仅在 reset_period =
+    /// 'custom' 时有意义：统计窗口从「开启/保存时刻」起按 N 小时/天滚动，
+    /// 而非对齐日历边界。两列可空，存量行（never/日历周期）保持 NULL，
+    /// 完全向后兼容；add_column_if_missing 幂等，缺表库跳过。
+    fn migrate_v22_to_v23(conn: &Connection) -> Result<(), AppError> {
+        if Self::table_exists(conn, "api_key_limits")? {
+            Self::add_column_if_missing(conn, "api_key_limits", "window_length", "INTEGER")?;
+            Self::add_column_if_missing(conn, "api_key_limits", "window_unit", "TEXT")?;
+        }
         Ok(())
     }
 

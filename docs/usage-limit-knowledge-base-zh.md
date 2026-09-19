@@ -77,7 +77,9 @@ CREATE TABLE api_key_limits (
     currency               TEXT,                    -- token 模式为 NULL；V1.0.2 起无 CHECK
     limit_amount           TEXT NOT NULL,      -- 金额十进制字符串 / token 正整数字符串
     usage_start_at         INTEGER NOT NULL,   -- 统计窗口起点（unix 秒）
-    reset_period           TEXT NOT NULL DEFAULT 'never',  -- V1.0.1
+    reset_period           TEXT NOT NULL DEFAULT 'never',  -- V1.0.1；V1.2.0 起 + custom
+    window_length          INTEGER,             -- V1.2.0：自定义窗长（仅 custom）
+    window_unit            TEXT,                -- V1.2.0：hours | days
     created_at             INTEGER NOT NULL,
     updated_at             INTEGER NOT NULL,
     PRIMARY KEY (provider_id, app_type),
@@ -159,28 +161,41 @@ WHERE provider_id = ? AND app_type = ?
 - **Overshoot 是设计内行为**：已允许发出的请求允许完成，usage 在响应
   结束后落库，最后一个请求可能小幅超出。禁止中断进行中的 SSE/流。
 
-### 4.3 重置周期与懒滚动（V1.0.1）
+### 4.3 重置周期与懒滚动（V1.0.1 引入，V1.2.0 重做语义）
 
-`ResetPeriod::current_period_start(now)` 按**本地时区**给出当前周期边界：
+**窗口起点（V1.2.0 起）**：首次创建、换 Key、**关→开**、**启用状态下改变
+重置配置**时，`usage_start_at` 一律设为「当下」——打开选项后开始计算，
+开启前的历史用量不并入。保存路径不再做日历回对齐（V1.0.1 的 daily 回对齐
+行为已移除）。
 
-| 周期 | 边界 | 例（2026-09-18 周五 15:27） |
+`ResetPeriod`：
+
+| 周期 | 滚动方式 | 例（2026-09-18 周五 15:27 启用） |
 | --- | --- | --- |
-| never | 无 | — |
-| hourly | 本地整点 | 15:00 |
-| daily | 本地零点 | 09-18 00:00 |
-| weekly | 本地周一零点（ISO 周） | 09-14 00:00 |
-| monthly | 本地 1 日零点 | 09-01 00:00 |
+| never | 不滚动，仅手动重置 | — |
+| hourly | 本地整点边界 | 15:00 起算，16:00 重置 |
+| daily | 本地零点边界 | 15:00 起算，次日 00:00 重置 |
+| weekly | 本地周一零点（ISO 周） | 起算至下周一 |
+| monthly | 本地 1 日零点 | 起算至下月 1 日 |
+| **custom**（V1.2.0） | **锚点 + 整数倍窗长**（N 小时/天） | 15:27 起算，每 N 小时/天滚动 |
 
-有效窗口起点 = `max(usage_start_at, 当前周期边界)`，三个应用点：
+- 日历周期有效起点 = `max(usage_start_at, 当前日历边界)`（启用后未到下个
+  边界时保持启用时刻，跨边界后滚动）。
+- custom 有效起点 = `锚点 + floor((now-锚点)/窗长) × 窗长`；窗长存于
+  `window_length`（1~10000）+ `window_unit`（hours/days），仅 custom 可携带。
+- 统一入口 `effective_window_start(row, now)` / `next_window_reset(...)`。
+
+三个应用点：
 
 1. **guard（写路径）**：先滚动后判定；滚动以一行 UPDATE 持久化
    （best-effort，失败仅告警，判定仍按新起点）。被限额的窗口跨过边界后
    在同一次 guard 调用内恢复放行。
 2. **status（读路径）**：同样即时计算并返回 `resetPeriod` / `nextResetAt`
    （下一次边界），但**不回写**——读接口保持无副作用。
-3. **save（写路径）**：周期值缺省视为 `never`，非法值拒绝入库；若原窗口
-   早于新周期边界（如 never→daily 且窗口在昨天）立即对齐到边界；原窗口
-   已在本周期内则**不回退**（保守保留本期已统计用量）。
+3. **save（写路径，V1.2.0）**：周期值缺省视为 `never`，非法值拒绝入库；
+   窗口起点按上方四种情形设定（关→开与重置配置变更 → 当下），不再回对齐
+   日历边界。custom 的长度/单位强校验（1~10000、hours/days），非 custom
+   不得携带窗口字段。
 
 懒滚动 vs 定时器：应用关闭期间跨过的边界在下次启动后照常生效；无并发
 定时任务；判定本来就在 DB Mutex 下串行，滚动只是一行 UPDATE。
@@ -225,11 +240,20 @@ overshoot 破坏转发并发。周期滚动写在同一 Mutex 下，无额外竞
 - enforcement 三态：`active` / `proxy_disabled`（该应用代理接管未开启，
   显示警示条）/ `unsupported_credential`（OAuth，禁止配置）。
 - Dialog 结构：关闭态只有开关行（简洁）；开启后同 Dialog 展开（不弹二级
-  窗）：限制方式 → 币种/汇率（money）/ Token 输入 → **重置周期五段选择器
-  （V1.0.1）** → enforcement/未知定价警示 → 用量/剩余/进度 →
-  [重置使用量] [取消] [保存]。
+  窗）：限制方式 → 币种/汇率（money）/ Token 输入 → **重置周期六段选择器
+  （V1.2.0 起 3 列 × 2 行，含 custom）** → custom 时显示「窗口长度」输入 +
+  小时/天分段（1~10000 整数校验）→ enforcement/未知定价警示 → 用量/剩余/
+  进度 → [重置使用量] [取消] [保存]。
+- **卡片用量徽标（V1.2.0）**：卡片限额图标旁新增显示开关（Eye/EyeOff，
+  按 provider 存 localStorage——仅 UI 偏好）；开启后显示
+  `{percent}%`（状态着色）+ `⏱{距下次重置}`（`formatDurationUntil`：
+  38m / 5h12m / 2d4h）；限额关闭或百分比缺失时自动隐藏。
 - 「下次重置：<本地时间>」仅在所选周期与**已保存**配置一致时展示，
   避免正在切换时显示过期边界。
+- **非模态交互（V1.2.0）**：Dialog root `modal={false}` + 遮罩
+  `pointer-events-none`——打开计费窗口时主窗口仍可拖动、背景可交互；
+  内容区为滚动容器（`min-h-0 flex-1 overflow-y-auto`），小窗口下配置
+  过长可滚动看全，不再被 90vh 上限裁切。
 - 实时刷新：`refetchOnMount: "always"` + `useUsageLimitEventBridge` 监听
   `usage-log-recorded` 事件 invalidate `usage-limit` 命名空间（请求记账后
   卡片/Dialog 即时更新），mutation 成功后 invalidate 对应 query；无
@@ -447,3 +471,4 @@ JPY 汇率）。该币种已保存的汇率会自动回填；首次使用该币�
 | V1.0.2 | 2026-09-18 | 金额限额扩展至 5 币种（USD/CNY/EUR/JPY/GBP）+ 各币种人工汇率、汇率命令泛化、schema v22（移除 currency CHECK）、币种符号后缀等 UI 打磨 |
 | **V1.1.0** | 2026-09-18 | **公开发布**：V1.0 + V1.0.1 + V1.0.2 的全部内容作为一个版本发布（基座 CC Switch 3.20.3），即 v1.0.0 之后的第一个公开版本 |
 | **V1.1.1** | 2026-09-18 | **安装包修复**：应用包完整 ad-hoc 签名（修复「文件已损坏」与首次拖拽不注册）、DMG 移除杂散 `.VolumeIcon.icns`、README/发布说明补充首次打开放行指引。功能与 V1.1.0 一致 |
+| **V1.2.0** | 2026-09-19 | 窗口语义重做（关→开/重置配置变更从当下起算，移除日历回对齐）+ 自定义滚动窗口（N 小时/天，schema v23）+ 计费窗口滚动/拖动修复 + 卡片用量徽标 |

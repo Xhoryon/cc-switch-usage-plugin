@@ -2,7 +2,7 @@
 
 # Usage Limit (Budget Limit) Knowledge Base
 
-> Applies to **V1.1.1** (public release, 2026-09-18; installer-fix release,
+> Applies to **V1.2.0** (public release, 2026-09-18; installer-fix release,
 > functionality identical to V1.1.0, base CC Switch 3.20.3). Iteration details
 > live in the matching `docs/development_log.md` entries. This document is an
 > integrated view, written for future maintainers: what it is, why it is
@@ -85,6 +85,8 @@ CREATE TABLE api_key_limits (
     limit_amount           TEXT NOT NULL,      -- decimal string (money) / positive integer string (token)
     usage_start_at         INTEGER NOT NULL,   -- budget window start (unix seconds)
     reset_period           TEXT NOT NULL DEFAULT 'never',  -- V1.0.1
+    window_length          INTEGER,            -- V1.2.0: custom window length
+    window_unit            TEXT,               -- V1.2.0: hours | days
     created_at             INTEGER NOT NULL,
     updated_at             INTEGER NOT NULL,
     PRIMARY KEY (provider_id, app_type),
@@ -187,50 +189,42 @@ rates must be > 0 and < 1,000,000; USD is the internal pricing base — always
   finish; usage lands after the response, so the final request may exceed the
   cap slightly. Never interrupt an in-flight SSE stream.
 
-### 4.3 Reset schedule and lazy rollover (V1.0.1)
+### 4.3 Reset schedule and lazy rollover (V1.0.1, reworked in V1.2.0)
 
-`ResetPeriod::current_period_start(now)` returns the current period boundary
-in the **local timezone**:
+**Window start (since V1.2.0)**: on first creation, key rotation, **off→on transition**, or **changing the reset configuration while enabled**, `usage_start_at` is set to "now" — counting starts when the option is turned on; earlier usage is never pulled in. The save path no longer back-aligns to calendar boundaries (the V1.0.1 daily back-alignment behavior was removed).
 
-| Period | Boundary | Example (Fri 2026-09-18 15:27) |
+`ResetPeriod`：
+| Period | Rollover | Example (enabled Fri 2026-09-18 15:27) |
 | --- | --- | --- |
-| never | none | — |
-| hourly | top of the local hour | 15:00 |
-| daily | local midnight | 2026-09-18 00:00 |
-| weekly | local Monday midnight (ISO week) | 2026-09-14 00:00 |
-| monthly | local midnight on the 1st | 2026-09-01 00:00 |
+| never | none, manual reset only | — |
+| hourly | local top-of-hour boundary | starts 15:27, resets 16:00 |
+| daily | local midnight boundary | starts 15:27, resets next 00:00 |
+| weekly | local Monday midnight (ISO week) | until next Monday |
+| monthly | local midnight on the 1st | until the 1st of next month |
+| **custom** (V1.2.0) | **anchor + whole multiples of the window** (N hours/days) | starts 15:27, rolls every N hours/days |
 
-Effective window start = `max(usage_start_at, current period boundary)`,
-applied at three points:
+- Calendar periods: effective start = `max(usage_start_at, current boundary)`
+  (stays at the enable moment until the next boundary, then rolls).
+- Custom: effective start = `anchor + floor((now-anchor)/window) × window`;
+  the length lives in `window_length` (1–10000) + `window_unit`
+  (hours/days), only allowed for custom.
+- Unified entry points `effective_window_start(row, now)` /
+  `next_window_reset(...)`.
 
+Three application points:
 1. **guard (write path)**: rollover first, decide second; the rollover is
    persisted with a single UPDATE (best-effort — a failure only warns, the
    decision still uses the new start). A spent window recovers within the
    same guard call once the boundary is crossed.
 2. **status (read path)**: computes the same effective start and returns
-   `resetPeriod` / `nextResetAt` (the next boundary) but **never writes
-   back** — reads stay side-effect free.
-3. **save (write path)**: a missing period means `never`; invalid values are
-   rejected. If the stored window is older than the new period boundary
-   (e.g. never→daily with a window in the past) it aligns to the boundary
-   immediately; if the window is already inside the current period it is
-   **not rewound** (conservatively keeps this period's accounting).
+   `resetPeriod` / `windowLength` / `windowUnit` / `nextResetAt` but **never
+   writes back** — reads stay side-effect free.
+3. **save (write path, V1.2.0)**: a missing period means `never`; invalid
+   values are rejected. The window start follows the four cases above
+   (off→on and reset-config changes → now); no back-alignment to calendar
+   boundaries. Custom length/unit are strictly validated (1–10000,
+   hours/days); non-custom configs must not carry window fields.
 
-Lazy rollover vs. a timer: boundaries crossed while the app is closed still
-apply on the next launch; no concurrent timer tasks; decisions are already
-serialized under the DB mutex, so a rollover is just one UPDATE.
-
-DST handling (same pattern as
-`usage_rollup::compute_local_midnight_cutoff`): ambiguous wall-clock times
-(fall-back repeated hour) take the earlier mapping; non-existent wall-clock
-times (spring-forward gap) retry one hour later; UTC interpretation is the
-final fallback. `next_period_start` additionally requires the result to be
-strictly in the future, otherwise it returns None (prefer hiding "next
-reset" over showing a stale one).
-
-Manual reset and the schedule are orthogonal: a manual reset advances the
-window to now and zeroes it immediately; the next period boundary still rolls
-over as usual. Resets **never delete** `proxy_request_logs` history.
 
 ### 4.4 Concurrency model
 
@@ -270,11 +264,17 @@ pointing at custom pricing. Unpriced requests aggregate as 0 cost, but the UI
   (OAuth; configuration is refused).
 - Dialog layout: when off, only the toggle row (concise); when on, everything
   expands inside the same dialog (no second dialog): limit type →
-  currency/rate (money) → token input → **reset schedule five-segment
-  selector (V1.0.1)** → enforcement/unknown-pricing warnings → used,
+  currency/rate (money) → token input → window input → **reset schedule six-segment
+  selector (3×2 grid, adds custom since V1.2.0)** → custom window length
+  input with hours/days segments → enforcement/unknown-pricing warnings → enforcement/unknown-pricing warnings → used,
   remaining, progress → [Reset usage] [Cancel] [Save].
 - "Next reset: <local time>" is shown only while the selected schedule equals
   the **saved** one, avoiding a stale boundary while switching.
+- **Card usage badge (V1.2.0)**: a display toggle (Eye/EyeOff, persisted
+  per provider in localStorage — UI preference only) next to the gauge icon;
+  when on, the card shows `{percent}%` (state-colored) + `⏱{time to next
+  reset}` (`formatDurationUntil`: 38m / 5h12m / 2d4h); hidden automatically
+  when the limit is off or no percent exists.
 - Live refresh: `refetchOnMount: "always"` plus `useUsageLimitEventBridge`
   listening for `usage-log-recorded` to invalidate the `usage-limit`
   namespace (cards and the dialog update right after accounting); mutations
@@ -516,3 +516,4 @@ row is cleaned up via FK CASCADE.
 | V1.0.2 | 2026-09-18 | Money limits extended to 5 currencies (USD/CNY/EUR/JPY/GBP) with per-currency manual rates, generalized rate commands, schema v22 (currency CHECK removed), currency-symbol suffix and other UI polish |
 | **V1.1.0** | 2026-09-18 | **Public release**: everything from V1.0 + V1.0.1 + V1.0.2 shipped as one version (base CC Switch 3.20.3) — the first public release after v1.0.0 |
 | **V1.1.1** | 2026-09-18 | **Installer fixes**: proper ad-hoc bundle signature (fixes "damaged" warning and first-drag registration), stray `.VolumeIcon.icns` removed from the DMG, first-launch approval guidance added to README/notes. Functionality identical to V1.1.0 |
+| **V1.2.0** | 2026-09-19 | Window semantics reworked (off→on and reset-config changes start from now; calendar back-alignment removed) + custom rolling windows (N hours/days, schema v23) + dialog scroll/drag fixes + card usage badge |

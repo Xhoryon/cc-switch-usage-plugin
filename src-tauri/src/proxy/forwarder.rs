@@ -5673,6 +5673,8 @@ mod tests {
                 currency: None,
                 limit_amount: Some("1000".to_string()),
                 reset_period: None,
+                window_length: None,
+                window_unit: None,
             },
         )
         .expect("save limit");
@@ -5726,6 +5728,8 @@ mod tests {
                 currency: Some("USD".to_string()),
                 limit_amount: Some("1".to_string()),
                 reset_period: None,
+                window_length: None,
+                window_unit: None,
             },
         )
         .expect("save limit");
@@ -5793,6 +5797,8 @@ mod tests {
                 currency: Some("USD".to_string()),
                 limit_amount: Some("0.01".to_string()),
                 reset_period: None,
+                window_length: None,
+                window_unit: None,
             },
         )
         .expect("save limit");
@@ -5823,6 +5829,8 @@ mod tests {
                 currency: Some("USD".to_string()),
                 limit_amount: Some("5".to_string()),
                 reset_period: Some("daily".to_string()),
+                window_length: None,
+                window_unit: None,
             },
         )
         .expect("save limit");

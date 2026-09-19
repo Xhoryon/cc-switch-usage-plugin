@@ -29,8 +29,12 @@ pub struct ApiKeyLimitRow {
     pub limit_amount: String,
     /// 预算统计窗口起点（unix 秒）
     pub usage_start_at: i64,
-    /// 重置周期："never" | "hourly" | "daily" | "weekly" | "monthly"
+    /// 重置周期："never" | "hourly" | "daily" | "weekly" | "monthly" | "custom"
     pub reset_period: String,
+    /// 自定义窗口长度（仅 reset_period = 'custom' 时有意义）
+    pub window_length: Option<i64>,
+    /// 自定义窗口单位："hours" | "days"
+    pub window_unit: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -68,7 +72,8 @@ impl Database {
         let conn = lock_conn!(self.conn);
         conn.query_row(
             "SELECT provider_id, app_type, credential_fingerprint, enabled, limit_type,
-                    currency, limit_amount, usage_start_at, reset_period, created_at, updated_at
+                    currency, limit_amount, usage_start_at, reset_period, window_length,
+                    window_unit, created_at, updated_at
              FROM api_key_limits WHERE provider_id = ?1 AND app_type = ?2",
             params![provider_id, app_type],
             |row| {
@@ -82,8 +87,10 @@ impl Database {
                     limit_amount: row.get(6)?,
                     usage_start_at: row.get(7)?,
                     reset_period: row.get(8)?,
-                    created_at: row.get(9)?,
-                    updated_at: row.get(10)?,
+                    window_length: row.get(9)?,
+                    window_unit: row.get(10)?,
+                    created_at: row.get(11)?,
+                    updated_at: row.get(12)?,
                 })
             },
         )
@@ -97,8 +104,9 @@ impl Database {
         conn.execute(
             "INSERT INTO api_key_limits (
                 provider_id, app_type, credential_fingerprint, enabled, limit_type,
-                currency, limit_amount, usage_start_at, reset_period, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                currency, limit_amount, usage_start_at, reset_period, window_length,
+                window_unit, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT (provider_id, app_type) DO UPDATE SET
                 credential_fingerprint = excluded.credential_fingerprint,
                 enabled = excluded.enabled,
@@ -107,6 +115,8 @@ impl Database {
                 limit_amount = excluded.limit_amount,
                 usage_start_at = excluded.usage_start_at,
                 reset_period = excluded.reset_period,
+                window_length = excluded.window_length,
+                window_unit = excluded.window_unit,
                 updated_at = excluded.updated_at",
             params![
                 row.provider_id,
@@ -118,6 +128,8 @@ impl Database {
                 row.limit_amount,
                 row.usage_start_at,
                 row.reset_period,
+                row.window_length,
+                row.window_unit,
                 row.created_at,
                 row.updated_at,
             ],

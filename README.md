@@ -32,6 +32,12 @@ usage.
   automatically at local-time boundaries: hourly / daily / weekly (Mondays) /
   monthly (on the 1st). A spent window recovers by itself at the next
   boundary — no manual reset needed
+- **Custom windows (new in v1.2.0)** — counting starts the moment you enable
+  the limit (never pulls in older usage) and can restart every N hours or N
+  days of your choosing
+- **Card usage badge (new in v1.2.0)** — an eye toggle next to the gauge icon
+  shows `{percent}%` plus the time to the next reset right on the provider
+  card
 - **Token limit** — uses the same normalized token counting as the built-in
   Usage Dashboard, so both always agree
 - **Real enforcement** — the proxy checks the budget _before_ forwarding; once
