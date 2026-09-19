@@ -76,6 +76,25 @@ budget 集成 39、migration 40（含 v23）全过；前端 typecheck PASS。
 单位切换、载荷断言、徽标显隐/时长格式化）；全量前端 1156（+5）、后端
 2931（+6，含 custom 窗口 6 项）全绿；clippy 本次改动文件 0 警告。
 
+### Step 4 — 发布与终态（V1.2.0）
+
+- **发布**：main（d734e77）+ tag v1.2.0 → Release 四语正文（docs/
+  release-notes/usage-limit-v1.2.0.md）+ 双资产（DMG 14.8MB 签名 PASS /
+  source zip 30.9MB）。
+- **发布前纠偏一次**：V1.1.1 补记小节引用了上轮泄漏的用户名字面量
+  （「元泄漏」），已在切 zip 前发现并泛化，tag v1.2.0 重打至 d734e77。
+- **资产终验**（重新下载）：DMG 卷根仅 `.DS_Store`/`Applications`/
+  `CC Switch.app`，签名 verify PASS，二进制用户名 0 命中且含
+  custom-window 代码；source zip 敏感扫描零命中。
+- **知识库四语同步**：§4.3（新窗口语义 + custom）、§5（非模态/滚动/
+  徽标）、DB 列、版本头与历史行——zh 先行，en/zh-TW/ja 以整节替换同步。
+- **README ×4**：新增「自定义窗口」「卡片用量徽标」两条功能点（四语）。
+- **验证汇总**：Rust 2931（usage_limit 47）/ 前端 1156（Dialog/Button
+  36）全绿；clippy 改动文件 0 警告；fmt PASS；DMG/release 构建全过。
+- **遗留说明**：徽标偏好存 localStorage（仅 UI 偏好，非用量数据，不违反
+  「localStorage 不作用量持久化」约束）；DMG 容器时间戳导致其哈希不可
+  复现（内部二进制可逐字节复现，见 V1.1.0 可复现性验证）。
+
 ---
 
 ## 2026-09-18 — V1.1.1 安装包修复 / Installer Fixes
