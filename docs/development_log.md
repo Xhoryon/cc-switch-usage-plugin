@@ -34,7 +34,7 @@ V1.0.2 代码冻结后的发布工程轮：文档四语言补齐、全仓库脱�
   `AKIAIOSFODNN7EXAMPLE`（AWS 官方文档示例键）、`/Users/test|me|demo`
   （通用夹具）、`farion1231@gmail.com`（上游作者公开联系方式）、
   `frontendLogger.ts` 的私钥检测正则（功能代码本身）。
-- 本地数据：无 .env/.db/.log 落入源码树；`jiayihuang` 仅存在于
+- 本地数据：无 .env/.db/.log 落入源码树；本机用户名仅存在于
   `.mimosa/` 本地扫描器状态（gitignored）。
 - 作者署名（Jiayi Huang / Xhoryon）为有意公开身份，保留。
 
