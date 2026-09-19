@@ -54,6 +54,36 @@
 
 ---
 
+## 2026-09-19 — V1.2.2 对话框布局终修 / Dialog Layout Final Fix
+
+### Problem（V1.2.1 后用户复测）
+
+1. 计费对话框标题仍被顶出窗口顶缘（与 V1.2.1 前相同症状）。
+2. 「里面是圆角、外面是一条直线」——玻璃卡（rounded-xl，12px）贴着
+   对话框外框（sm:rounded-lg，6px）边缘排布，嵌套圆角失衡观感很差。
+
+### Root cause（V1.2.1 修复无效的原因）
+
+V1.2.1 的高度约束使用了 `calc(100dvh-1rem)`——**`dvh` 单位在旧版
+WKWebView（macOS 12/13）不被解析**，整条声明被丢弃；又因 cn/tailwind-merge
+把共享组件的 `max-h-[90vh]` 去重掉了，结果元素**完全没有高度上限**，
+内容全高渲染 + 居中平移 → 标题被顶出。V1.2.1 的「修复」实际把唯一有效的
+约束也删掉了。
+
+### Fix
+
+1. `dvh` → **`vh`**（所有 WKWebView 通用）：`max-h-[calc(100vh-1rem)]`
+   + `overflow-hidden` 重新生效，标题/底部按钮恒定可见，内容区滚动。
+2. 玻璃卡内缩：滚动容器 `px-4 py-1`——内层圆角不再贴外框边缘，
+   嵌套圆角（外 6px ⊃ 内 12px）视觉平衡，外框不再出现「直线贴边」。
+
+### Verification（单轮全量）
+
+typecheck / format / 前端 1156（Dialog 36）/ vite build / fmt 全 PASS；
+Rust 无改动。
+
+---
+
 ## 2026-09-19 — V1.2.0 自定义窗口与界面修复 / Custom Windows & UI Fixes
 
 > 状态：进行中（分四步交付，每步完成后更新本条目与知识库）。

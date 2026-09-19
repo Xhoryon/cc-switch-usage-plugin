@@ -297,7 +297,7 @@ export function UsageLimitDialog({
         modal={false}
       >
         <DialogContent
-          className="sm:max-w-md max-h-[calc(100dvh-1rem)] overflow-hidden"
+          className="sm:max-w-md max-h-[calc(100vh-1rem)] overflow-hidden"
           overlayClassName="pointer-events-none"
           data-testid="usage-limit-dialog"
         >
@@ -313,7 +313,7 @@ export function UsageLimitDialog({
 
           {/* 内容区可滚动：小窗口下配置过长时不再被裁切（V1.2.0） */}
           <div
-            className="min-h-0 flex-1 overflow-y-auto"
+            className="min-h-0 flex-1 overflow-y-auto px-4 py-1"
             data-testid="usage-limit-scroll"
           >
             {/* 启用开关：设置页同款图标卡片行 */}

@@ -239,10 +239,15 @@ overshoot 破壞轉發並行。週期滾動寫在同一 Mutex 下，無額外競
 - **懸停提示（V1.2.1）**：卡片圖示列全部按鈕（含眼睛=徽標開關、儀表板=
   限額設定）以 Radix Tooltip 懸停說明（ProviderActions `TipButton`，
   disabled 態外包 span）；取代 WKWebView 下不可靠的原生 `title`。
-- **對話框高度（V1.2.1）**：明確 `max-h-[calc(100dvh-1rem)] overflow-hidden`
-  覆蓋共享 90vh 上限（Overlay 標題列視窗下 90vh 會把標題頂出視窗頂緣），
-  內容區捲動容器在其內生效；自訂視窗列輸入 `min-w-0 flex-1`、
-  小時/天分段 `w-28 shrink-0`，窄窗不橫向裁切。
+- **對話框高度（V1.2.1 引入、V1.2.2 修正）**：明確
+  `max-h-[calc(100vh-1rem)] overflow-hidden` 覆蓋共享 90vh 上限，內容區
+  捲動容器在其內生效——標題/底部按鈕恆定可見。**必須用 `vh` 而非 `dvh`**：
+  dvh 在舊版 WKWebView（macOS 12/13）不被解析，且 tailwind-merge 會先去重
+  掉共享的 90vh，導致整條約束失效（V1.2.1 的教訓）。自訂視窗列輸入
+  `min-w-0 flex-1`、小時/天分段 `w-28 shrink-0`，窄窗不橫向裁切。
+- **嵌套圓角（V1.2.2）**：捲動容器 `px-4 py-1` 讓玻璃卡（rounded-xl）
+  與外框（rounded-lg）之間留出內縮——外 6px ⊃ 內 12px 的半徑差不再
+  產生「內圓角外直線」的觀感。
 - 即時重新整理：`refetchOnMount: "always"` + `useUsageLimitEventBridge` 監聽
   `usage-log-recorded` 事件 invalidate `usage-limit` 命名空間（請求記帳後
   卡片/Dialog 即時更新），mutation 成功後 invalidate 對應 query；無
@@ -462,3 +467,4 @@ JPY 匯率）。該幣種已儲存的匯率會自動回填；首次使用該幣�
 | **V1.1.1** | 2026-09-18 | **安裝包修復**：應用套件完整 ad-hoc 簽章（修復「檔案已損毀」與首次拖拽不註冊）、DMG 移除雜散 `.VolumeIcon.icns`、README/發布說明補充首次開啟放行指引。功能與 V1.1.0 一致 |
 | **V1.2.0** | 2026-09-19 | 視窗語義重做（關→開/重置設定變更從當下起算，移除日曆回對齊）+ 自訂滾動視窗（N 小時/天，schema v23）+ 對話框滾動/拖動修復 + 卡片用量徽標 |
 | **V1.2.1** | 2026-09-19 | 介面細節修復：對話框高度約束（標題不再頂出）、自訂視窗列溢出、卡片圖示列懸停提示 |
+| **V1.2.2** | 2026-09-19 | 對話框布局終修：max-h 改用 vh（dvh 在舊 WKWebView 失效是 V1.2.1 無效的根因）+ 玻璃卡內縮解決嵌套圓角 |

@@ -279,12 +279,18 @@ pointing at custom pricing. Unpriced requests aggregate as 0 cost, but the UI
   eye = badge toggle and the gauge = limit settings) explains itself via a
   Radix Tooltip on hover (`TipButton` in ProviderActions, span-wrapped for
   disabled states); replaces the unreliable native `title` in WKWebView.
-- **Dialog height (V1.2.1)**: explicit
-  `max-h-[calc(100dvh-1rem)] overflow-hidden` overrides the shared 90vh cap
-  (under the overlay titlebar, 90vh pushed the title out of the window); the
-  scrollable content area works inside it, and the custom-window row input
+- **Dialog height (V1.2.1, fixed in V1.2.2)**: explicit
+  `max-h-[calc(100vh-1rem)] overflow-hidden` overrides the shared 90vh cap,
+  with the scrollable content area inside — title and footer always visible.
+  **Use `vh`, never `dvh`**: dvh is unparsed in older WKWebViews (macOS
+  12/13) and tailwind-merge strips the shared 90vh first, so the whole
+  constraint silently vanished (the V1.2.1 lesson). Custom-window row input
   (`min-w-0 flex-1`) plus hours/days segments (`w-28 shrink-0`) no longer
   overflow in narrow dialogs.
+- **Nested radii (V1.2.2)**: the scroll container got `px-4 py-1` so the
+  glass cards (rounded-xl) sit inset from the outer frame (rounded-lg) —
+  the 6px⊃12px radius difference no longer reads as "rounded inside, straight
+  line outside".
 - Live refresh: `refetchOnMount: "always"` plus `useUsageLimitEventBridge`
   listening for `usage-log-recorded` to invalidate the `usage-limit`
   namespace (cards and the dialog update right after accounting); mutations
@@ -528,3 +534,4 @@ row is cleaned up via FK CASCADE.
 | **V1.1.1** | 2026-09-18 | **Installer fixes**: proper ad-hoc bundle signature (fixes "damaged" warning and first-drag registration), stray `.VolumeIcon.icns` removed from the DMG, first-launch approval guidance added to README/notes. Functionality identical to V1.1.0 |
 | **V1.2.0** | 2026-09-19 | Window semantics reworked (off→on and reset-config changes start from now; calendar back-alignment removed) + custom rolling windows (N hours/days, schema v23) + dialog scroll/drag fixes + card usage badge |
 | **V1.2.1** | 2026-09-19 | UI polish: dialog height constraint (title no longer pushed out), custom-window row overflow, hover hints across the card icon row |
+| **V1.2.2** | 2026-09-19 | Dialog layout final fix: max-h switched to vh (dvh failing on old WKWebView was why V1.2.1 didn't work) + glass card inset for nested radii |
