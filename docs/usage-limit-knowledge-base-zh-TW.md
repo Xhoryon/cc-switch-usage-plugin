@@ -236,6 +236,13 @@ overshoot 破壞轉發並行。週期滾動寫在同一 Mutex 下，無額外競
 - **卡片用量徽標（V1.2.0）**：儀表板圖示旁新增顯示開關（Eye/EyeOff，按
   provider 存 localStorage——僅 UI 偏好）；開啟後顯示 `{percent}%`
   （狀態著色）+ `⏱{距下次重置}`；限額關閉或百分比缺失時自動隱藏。
+- **懸停提示（V1.2.1）**：卡片圖示列全部按鈕（含眼睛=徽標開關、儀表板=
+  限額設定）以 Radix Tooltip 懸停說明（ProviderActions `TipButton`，
+  disabled 態外包 span）；取代 WKWebView 下不可靠的原生 `title`。
+- **對話框高度（V1.2.1）**：明確 `max-h-[calc(100dvh-1rem)] overflow-hidden`
+  覆蓋共享 90vh 上限（Overlay 標題列視窗下 90vh 會把標題頂出視窗頂緣），
+  內容區捲動容器在其內生效；自訂視窗列輸入 `min-w-0 flex-1`、
+  小時/天分段 `w-28 shrink-0`，窄窗不橫向裁切。
 - 即時重新整理：`refetchOnMount: "always"` + `useUsageLimitEventBridge` 監聽
   `usage-log-recorded` 事件 invalidate `usage-limit` 命名空間（請求記帳後
   卡片/Dialog 即時更新），mutation 成功後 invalidate 對應 query；無
@@ -454,3 +461,4 @@ JPY 匯率）。該幣種已儲存的匯率會自動回填；首次使用該幣�
 | **V1.1.0** | 2026-09-18 | **公開發布**：V1.0 + V1.0.1 + V1.0.2 的全部內容作為一個版本發布（基座 CC Switch 3.20.3），即 v1.0.0 之後的第一個公開版本 |
 | **V1.1.1** | 2026-09-18 | **安裝包修復**：應用套件完整 ad-hoc 簽章（修復「檔案已損毀」與首次拖拽不註冊）、DMG 移除雜散 `.VolumeIcon.icns`、README/發布說明補充首次開啟放行指引。功能與 V1.1.0 一致 |
 | **V1.2.0** | 2026-09-19 | 視窗語義重做（關→開/重置設定變更從當下起算，移除日曆回對齊）+ 自訂滾動視窗（N 小時/天，schema v23）+ 對話框滾動/拖動修復 + 卡片用量徽標 |
+| **V1.2.1** | 2026-09-19 | 介面細節修復：對話框高度約束（標題不再頂出）、自訂視窗列溢出、卡片圖示列懸停提示 |

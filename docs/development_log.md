@@ -13,6 +13,47 @@
 > 合并以 **V1.1.0**（基座 CC Switch 3.20.3）公开发布。/ Internal iterations
 > V1.0 / V1.0.1 / V1.0.2 shipped publicly as **V1.1.0**.
 
+## 2026-09-19 — V1.2.1 界面细节修复 / UI Polish
+
+### Problem（用户实测反馈）
+
+1. 小窗口下打开计费对话框，标题「使用限额 <名称>」被顶出窗口顶缘（图1）。
+2. 自定义窗口行中「小时/天」分段控件被横向裁切（图2）。
+3. 供应商卡片图标行没有悬停功能提示，用户不知道各图标（尤其眼睛图标）
+   的作用（图3）。
+
+### Fix
+
+1. **对话框高度约束**：UsageLimitDialog 的 DialogContent 显式追加
+   `max-h-[calc(100dvh-1rem)] overflow-hidden`（cn/tailwind-merge 使其
+   覆盖共享组件的 max-h-[90vh]——90vh 在 Tauri Overlay 标题栏窗口下实测
+   会顶出顶部）。内容区滚动容器（V1.2.0 已加）在明确高度约束下正常生效，
+   标题与底部按钮恒定可见。
+2. **自定义行溢出**：窗口长度输入 `min-w-0 flex-1`、小时/天分段
+   `w-28 shrink-0`——窄对话框内不再横向溢出裁切。
+3. **图标行悬停提示**：ProviderActions 新增 `TipButton`（Radix Tooltip，
+   disabled 态外包 span 保证提示可触发），六个上游按钮（编辑/复制/
+   连通检测/套餐用量/终端/删除）由不可靠的原生 `title` 全部迁移；
+   使用限额组件内眼睛开关（= 卡片徽标显示开关，showOnCard/hideFromCard）
+   与仪表盘图标补充 Tooltip。复用既有 i18n key，零新增文案键。
+
+### 图4 答疑（空状态「添加供应商」与右上角「+」）
+
+功能同源：两者都打开「添加供应商」流程。右上角「+」在任何时候可用（含
+按应用切换的下拉）；空状态大按钮仅在当前应用没有任何供应商时出现，是
+引导新用户的快捷入口，出现后即随列表消失——不冗余，保留。
+
+### Verification（3 轮循环检测）
+
+- R1：typecheck / format / 前端 1156 / 后端 2931 / clippy（改动文件 0
+  警告，仅 3 个既有文件的历史警告）。
+- R2：vite 生产构建 + release 二进制重建（重映射保持）+ fmt。
+- R3：i18n 46 keys ×4 parity、README ×4 = 8 章节、KB ×4 = 13 章节、
+  全仓库敏感扫描零命中。
+- ProviderActions 既有测试（按 aria-label 定位按钮）全部不受影响。
+
+---
+
 ## 2026-09-19 — V1.2.0 自定义窗口与界面修复 / Custom Windows & UI Fixes
 
 > 状态：进行中（分四步交付，每步完成后更新本条目与知识库）。

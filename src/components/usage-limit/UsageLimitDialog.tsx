@@ -297,7 +297,7 @@ export function UsageLimitDialog({
         modal={false}
       >
         <DialogContent
-          className="sm:max-w-md"
+          className="sm:max-w-md max-h-[calc(100dvh-1rem)] overflow-hidden"
           overlayClassName="pointer-events-none"
           data-testid="usage-limit-dialog"
         >
@@ -535,9 +535,9 @@ export function UsageLimitDialog({
                           }}
                           placeholder="6"
                           inputMode="numeric"
-                          className="h-9"
+                          className="h-9 min-w-0 flex-1"
                         />
-                        <div className="grid flex-1 grid-cols-2 gap-1 rounded-lg bg-muted p-1">
+                        <div className="grid w-28 shrink-0 grid-cols-2 gap-1 rounded-lg bg-muted p-1">
                           <SegmentOption
                             active={windowUnit === "hours"}
                             label={t("usageLimit.hours")}

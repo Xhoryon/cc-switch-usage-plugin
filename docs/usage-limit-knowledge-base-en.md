@@ -275,6 +275,16 @@ pointing at custom pricing. Unpriced requests aggregate as 0 cost, but the UI
   when on, the card shows `{percent}%` (state-colored) + `⏱{time to next
   reset}` (`formatDurationUntil`: 38m / 5h12m / 2d4h); hidden automatically
   when the limit is off or no percent exists.
+- **Hover hints (V1.2.1)**: every button in the card icon row (including the
+  eye = badge toggle and the gauge = limit settings) explains itself via a
+  Radix Tooltip on hover (`TipButton` in ProviderActions, span-wrapped for
+  disabled states); replaces the unreliable native `title` in WKWebView.
+- **Dialog height (V1.2.1)**: explicit
+  `max-h-[calc(100dvh-1rem)] overflow-hidden` overrides the shared 90vh cap
+  (under the overlay titlebar, 90vh pushed the title out of the window); the
+  scrollable content area works inside it, and the custom-window row input
+  (`min-w-0 flex-1`) plus hours/days segments (`w-28 shrink-0`) no longer
+  overflow in narrow dialogs.
 - Live refresh: `refetchOnMount: "always"` plus `useUsageLimitEventBridge`
   listening for `usage-log-recorded` to invalidate the `usage-limit`
   namespace (cards and the dialog update right after accounting); mutations
@@ -517,3 +527,4 @@ row is cleaned up via FK CASCADE.
 | **V1.1.0** | 2026-09-18 | **Public release**: everything from V1.0 + V1.0.1 + V1.0.2 shipped as one version (base CC Switch 3.20.3) — the first public release after v1.0.0 |
 | **V1.1.1** | 2026-09-18 | **Installer fixes**: proper ad-hoc bundle signature (fixes "damaged" warning and first-drag registration), stray `.VolumeIcon.icns` removed from the DMG, first-launch approval guidance added to README/notes. Functionality identical to V1.1.0 |
 | **V1.2.0** | 2026-09-19 | Window semantics reworked (off→on and reset-config changes start from now; calendar back-alignment removed) + custom rolling windows (N hours/days, schema v23) + dialog scroll/drag fixes + card usage badge |
+| **V1.2.1** | 2026-09-19 | UI polish: dialog height constraint (title no longer pushed out), custom-window row overflow, hover hints across the card icon row |

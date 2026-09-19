@@ -198,24 +198,33 @@ function UsageLimitButtonInner({
             )}
           </span>
         )}
-        <Button
-          size="icon"
-          variant="ghost"
-          onClick={toggleBadge}
-          aria-pressed={showBadge}
-          aria-label={
-            showBadge
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={toggleBadge}
+              aria-pressed={showBadge}
+              aria-label={
+                showBadge
+                  ? t("usageLimit.hideFromCard")
+                  : t("usageLimit.showOnCard")
+              }
+              className="h-8 w-8 p-1 text-muted-foreground hover:text-foreground"
+            >
+              {showBadge ? (
+                <Eye className="h-4 w-4" />
+              ) : (
+                <EyeOff className="h-4 w-4" />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            {showBadge
               ? t("usageLimit.hideFromCard")
-              : t("usageLimit.showOnCard")
-          }
-          className="h-8 w-8 p-1 text-muted-foreground hover:text-foreground"
-        >
-          {showBadge ? (
-            <Eye className="h-4 w-4" />
-          ) : (
-            <EyeOff className="h-4 w-4" />
-          )}
-        </Button>
+              : t("usageLimit.showOnCard")}
+          </TooltipContent>
+        </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
             <Button

@@ -13,8 +13,15 @@ import {
   Trash2,
   Zap,
 } from "lucide-react";
+import type { ComponentPropsWithoutRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,6 +37,38 @@ import { UsageLimitButton } from "@/components/usage-limit/UsageLimitButton";
 interface OpenClawDefaultModelOption {
   id: string;
   name?: string;
+}
+
+/**
+ * 图标操作按钮 + 悬停功能提示（V1.2.1）。
+ *
+ * WKWebView 中原生 `title` 提示不可靠，改用与应用一致的 Radix Tooltip；
+ * disabled 按钮外包一层 span，保证禁用态仍能触发提示。
+ */
+function TipButton({
+  tip,
+  children,
+  ...buttonProps
+}: ComponentPropsWithoutRef<typeof Button> & { tip: string }) {
+  const button = (
+    <Button size="icon" variant="ghost" {...buttonProps}>
+      {children}
+    </Button>
+  );
+  return (
+    <TooltipProvider delayDuration={300}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          {buttonProps.disabled ? (
+            <span className="inline-flex">{button}</span>
+          ) : (
+            button
+          )}
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{tip}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
 }
 
 interface ProviderActionsProps {
@@ -392,39 +431,35 @@ export function ProviderActions({
       </span>
 
       <div className="flex items-center gap-1">
-        <Button
-          size="icon"
-          variant="ghost"
+        <TipButton
+          tip={isReadOnly ? readOnlyHint : t("common.edit")}
           onClick={isReadOnly ? undefined : onEdit}
           disabled={isReadOnly}
           aria-label={t("common.edit")}
-          title={isReadOnly ? readOnlyHint : t("common.edit")}
           className={cn(
             iconButtonClass,
             isReadOnly && "opacity-40 cursor-not-allowed text-muted-foreground",
           )}
         >
           <Edit className="h-4 w-4" />
-        </Button>
+        </TipButton>
 
         {onDuplicate && (
-          <Button
-            size="icon"
-            variant="ghost"
+          <TipButton
+            tip={t("provider.duplicate")}
             onClick={onDuplicate}
-            title={t("provider.duplicate")}
+            aria-label={t("provider.duplicate")}
             className={iconButtonClass}
           >
             <Copy className="h-4 w-4" />
-          </Button>
+          </TipButton>
         )}
 
-        <Button
-          size="icon"
-          variant="ghost"
+        <TipButton
+          tip={t("provider.connectivityCheck", "检测连通")}
           onClick={onTest || undefined}
           disabled={isTesting}
-          title={t("provider.connectivityCheck", "检测连通")}
+          aria-label={t("provider.connectivityCheck", "检测连通")}
           className={cn(
             iconButtonClass,
             !onTest && "opacity-40 cursor-not-allowed text-muted-foreground",
@@ -435,13 +470,12 @@ export function ProviderActions({
           ) : (
             <Activity className="h-4 w-4" />
           )}
-        </Button>
+        </TipButton>
 
-        <Button
-          size="icon"
-          variant="ghost"
+        <TipButton
+          tip={t("provider.configureUsage")}
           onClick={onConfigureUsage || undefined}
-          title={t("provider.configureUsage")}
+          aria-label={t("provider.configureUsage")}
           className={cn(
             iconButtonClass,
             !onConfigureUsage &&
@@ -449,7 +483,7 @@ export function ProviderActions({
           )}
         >
           <BarChart3 className="h-4 w-4" />
-        </Button>
+        </TipButton>
 
         {onConfigureLimit && (
           <UsageLimitButton
@@ -460,27 +494,24 @@ export function ProviderActions({
         )}
 
         {onOpenTerminal && (
-          <Button
-            size="icon"
-            variant="ghost"
+          <TipButton
+            tip={t("provider.openTerminal", "打开终端")}
             onClick={onOpenTerminal}
-            title={t("provider.openTerminal", "打开终端")}
+            aria-label={t("provider.openTerminal", "打开终端")}
             className={cn(
               iconButtonClass,
               "hover:text-emerald-600 dark:hover:text-emerald-400",
             )}
           >
             <Terminal className="h-4 w-4" />
-          </Button>
+          </TipButton>
         )}
 
-        <Button
-          size="icon"
-          variant="ghost"
+        <TipButton
+          tip={deleteHint}
           onClick={canDelete ? onDelete : undefined}
           disabled={!canDelete}
           aria-label={t("common.delete")}
-          title={deleteHint}
           className={cn(
             iconButtonClass,
             canDelete && "hover:text-red-500 dark:hover:text-red-400",
@@ -488,7 +519,7 @@ export function ProviderActions({
           )}
         >
           <Trash2 className="h-4 w-4" />
-        </Button>
+        </TipButton>
       </div>
     </div>
   );
