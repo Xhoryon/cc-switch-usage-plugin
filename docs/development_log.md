@@ -58,7 +58,7 @@
 - 隔离模拟（副本 + quarantine xattr）：`spctl -a` = rejected（未公证的
   预期拒绝，结构有效可放行），不再是签名损坏。
 - 复现 DMG 卷根仅 `.DS_Store` / `Applications` / `CC Switch.app`。
-- 二进制 `jiayihuang` 0 命中（RUSTFLAGS 重映射保持）。
+- 二进制本机用户名 0 命中（RUSTFLAGS 重映射保持）。
 - 功能代码零变更（相对 V1.1.0 仅 tauri.conf 一行 + 文档）。
 
 ---
