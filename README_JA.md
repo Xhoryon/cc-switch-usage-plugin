@@ -51,6 +51,11 @@
 1. [Releases](https://github.com/Xhoryon/cc-switch-usage-plugin/releases) ページから
    `CC.Switch_3.20.3_aarch64_usage-limit.dmg`（macOS、Apple Silicon）をダウンロード。
 2. DMG をマウントし、**CC Switch.app** をアプリケーションにドラッグします。
+3. 初回起動：アプリを右クリックして**「開く」→「開く」**を選択してください。
+   本プラグインは公証されていないため、macOS が 1 回だけ「開発者を検証でき
+   ません」と表示します。ターミナルで
+   `xattr -dr com.apple.quarantine "/Applications/CC Switch.app"` を 1 回
+   実行しても良いです。
 
 ## クイックスタート
 

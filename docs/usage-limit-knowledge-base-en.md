@@ -506,3 +506,4 @@ row is cleaned up via FK CASCADE.
 | V1.0.1 | 2026-09-18 | Reset schedule (never/hourly/daily/weekly/monthly, local-time lazy rollover), "next reset" display, schema v21, boundary-recovery integration test |
 | V1.0.2 | 2026-09-18 | Money limits extended to 5 currencies (USD/CNY/EUR/JPY/GBP) with per-currency manual rates, generalized rate commands, schema v22 (currency CHECK removed), currency-symbol suffix and other UI polish |
 | **V1.1.0** | 2026-09-18 | **Public release**: everything from V1.0 + V1.0.1 + V1.0.2 shipped as one version (base CC Switch 3.20.3) — the first public release after v1.0.0 |
+| **V1.1.1** | 2026-09-18 | **Installer fixes**: proper ad-hoc bundle signature (fixes "damaged" warning and first-drag registration), stray `.VolumeIcon.icns` removed from the DMG, first-launch approval guidance added to README/notes. Functionality identical to V1.1.0 |

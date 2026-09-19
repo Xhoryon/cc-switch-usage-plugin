@@ -55,6 +55,10 @@ usage.
    [Releases](https://github.com/Xhoryon/cc-switch-usage-plugin/releases) page
    (macOS, Apple Silicon).
 2. Mount the DMG and drag **CC Switch.app** into Applications.
+3. First launch: right-click the app and choose **Open → Open** — the plugin
+   is not notarized, so macOS shows a one-time "cannot verify developer"
+   prompt. Alternatively run
+   `xattr -dr com.apple.quarantine "/Applications/CC Switch.app"` once.
 
 ## Quick start
 

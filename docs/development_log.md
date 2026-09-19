@@ -13,6 +13,56 @@
 > 合并以 **V1.1.0**（基座 CC Switch 3.20.3）公开发布。/ Internal iterations
 > V1.0 / V1.0.1 / V1.0.2 shipped publicly as **V1.1.0**.
 
+## 2026-09-18 — V1.1.1 安装包修复 / Installer Fixes
+
+### Problem（用户实测反馈的三个症状）
+
+1. DMG 打开后窗口里出现裸露的 `.VolumeIcon.icns` 图标文件（观感异常）。
+2. 第一次把应用拖进 Applications 后，启动台/程序坞不显示；第二次拖拽才提示
+   「已存在，是否替换」。
+3. 安装后打开提示「文件已损坏」（并非「无法验证开发者」那种可放行提示）。
+
+### Root cause（诊断）
+
+对已发布 DMG 挂载诊断（`codesign -dv` / `codesign --verify` / `spctl` /
+`ls -la`）：
+
+- **主因：应用包从未被整体签名**。`codesign -dv` 显示
+  `flags=0x20002(adhoc,linker-signed)`——只有内部二进制带链接器自动 ad-hoc
+  签名；`codesign --verify --deep --strict` 失败：
+  `code has no resources but signature indicates they must be present`
+  （bundle 缺 `_CodeSignature/CodeResources`）。带隔离属性的这种包，
+  Gatekeeper 判「已损坏」（死路提示，无法右键放行）。
+  根源：tauri.conf 未配置 `signingIdentity`，Tauri 打包时跳过 bundle 签名。
+- 症状 2 是主因的伴生表现：LaunchServices 拒绝注册签名无效的包，首次拖拽
+  落盘但不注册，二次拖拽触发「替换」。
+- `.VolumeIcon.icns`（1MB，应用图标副本）躺在 DMG 卷根且无任何隐藏属性
+  （Finder flags=0）——bundle_dmg.sh 生成后未标记不可见。
+
+### Fix
+
+1. `tauri.conf.json`：`bundle.macOS.signingIdentity = "-"`（显式 ad-hoc）。
+   构建后 bundle 获得完整签名：`Identifier=com.ccswitch.desktop`、
+   `flags=0x10002(adhoc,runtime)`、`CodeResources` 就位，
+   `codesign --verify --deep --strict` **PASS**。
+2. DMG 后处理：`hdiutil convert UDRW → 删除 .VolumeIcon.icns → convert
+   UDZO`，安装窗口只剩应用与 Applications 链接。
+3. 诚实边界：无付费 Apple 开发者账号则**无法公证**。修复后 Gatekeeper 对
+   下载副本的判定从死路「已损坏」变为可放行的「无法验证开发者」——右键
+   打开，或 `xattr -dr com.apple.quarantine`。该一次性指引已写入 README ×4
+   与发布正文。
+
+### Verification
+
+- `codesign --verify --deep --strict`：PASS（v1.1.0 资产为 FAIL）。
+- 隔离模拟（副本 + quarantine xattr）：`spctl -a` = rejected（未公证的
+  预期拒绝，结构有效可放行），不再是签名损坏。
+- 复现 DMG 卷根仅 `.DS_Store` / `Applications` / `CC Switch.app`。
+- 二进制 `jiayihuang` 0 命中（RUSTFLAGS 重映射保持）。
+- 功能代码零变更（相对 V1.1.0 仅 tauri.conf 一行 + 文档）。
+
+---
+
 ## 2026-09-18 — V1.1.0 公开发布 / Public Release & Release Engineering
 
 ### Scope

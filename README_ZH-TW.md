@@ -45,6 +45,9 @@
 1. 從 [Releases](https://github.com/Xhoryon/cc-switch-usage-plugin/releases) 頁面下載
    `CC.Switch_3.20.3_aarch64_usage-limit.dmg`（macOS，Apple Silicon）。
 2. 掛載 DMG，將 **CC Switch.app** 拖入「應用程式」。
+3. 首次開啟：右鍵點擊應用並選擇**打開 → 打開**——本外掛未經 Apple 公證，
+   macOS 會顯示一次性的「無法驗證開發者」提示。也可以在終端機執行一次
+   `xattr -dr com.apple.quarantine "/Applications/CC Switch.app"`。
 
 ## 快速上手
 
