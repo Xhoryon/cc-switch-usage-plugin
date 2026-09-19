@@ -129,7 +129,7 @@ budget 集成 39、migration 40（含 v23）全过；前端 typecheck PASS。
 ### 发布后修正与终态（发布日终审）
 
 - **tag 重打一次**：首轮 v1.1.1 tag（7256f6c）的日志验证小节含本机用户名
-  字面量（「二进制 `jiayihuang` 0 命中」字样），随 tag 进入 source zip。
+  字面量（「二进制 <用户名> 0 命中」字样），随 tag 进入 source zip。
   发现后立即泛化该字面量 → 删除并重打 tag 至 f27517c → 重切 source zip
   `--clobber` 替换。DMG 不受影响（文档不入二进制，签名验证照旧 PASS）。
 - **发布终审（3 个 Release × 6 资产全下载复扫）**：
