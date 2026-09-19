@@ -2,8 +2,8 @@
 
 # 使用制限（Budget Limit）ナレッジベース
 
-> 適用バージョン：**V1.1.0**（公開リリース、2026-09-18。内部イテレーション
-> V1.0 / V1.0.1 / V1.0.2 の統合、ベース CC Switch 3.20.3）。各イテレーションの
+> 適用バージョン：**V1.1.1**（公開リリース、2026-09-18。インストーラ修正版で
+> 機能は V1.1.0 と同一、ベース CC Switch 3.20.3）。各イテレーションの
 > 詳細は `docs/development_log.md` の対応エントリを参照。本書は統合ビューで
 > あり、今後のメンテナに向けて「何か、なぜこの設計か、どこを変更するときに
 > 注意すべきか」を答える。
@@ -395,6 +395,15 @@ JPY のレートとして保存しかねない）。選択した通貨の保存�
 再取得され、初使用時は既定値が入る。取得が完了するまで保存は検証で遮断され、
 誤ったレートが保存されることはない。
 
+**Q：初回起動で「開発者を検証できない」/「破損しています」と出る？**
+- v1.1.1 から：アプリバンドルは完全な ad-hoc 署名付きで、「破損」警告は
+  解消済み。公証されていないため、初回起動時に 1 回だけ「開発者を検証でき
+  ません」が表示されます——**アプリを右クリック →「開く」→「開く」**で
+  許可、またはターミナルで `xattr -dr com.apple.quarantine
+  "/Applications/CC Switch.app"` を 1 回実行。
+- v1.1.0 以前のインストーラはバンドル署名が欠落しており（「破損」警告が
+  出ます）、v1.1.1 以降を使ってください。
+
 **Q：新しいバージョンをリリースするには？**
 1. `pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'`
    （署名鍵がない場合は updater 生成物を無効化。ビルドには cargo が PATH 上
@@ -464,7 +473,7 @@ ALTER ADD COLUMN の移行パスと新規 DDL の挙動を完全に一致させ�
 | `src/hooks/useUsageEventBridge.ts` | 記帳イベント → invalidate（メイン UI の更新） |
 | `src/i18n/locales/{zh,zh-TW,en,ja}.json` | `usageLimit` 名前空間 × 39 keys |
 | `tests/components/UsageLimitDialog.test.tsx` | フロントエンドテスト（31） |
-| `docs/release-notes/usage-limit-v1.1.0.md` | 4 言語リリース本文（GitHub Release とリポジトリの両方に保存） |
+| `docs/release-notes/usage-limit-v1.1.{0,1}.md` | バージョンごとの 4 言語リリース本文（GitHub Release とリポジトリの両方に保存） |
 | `docs/usage-limit-knowledge-base-{zh,en,zh-TW,ja}.md` | 本ナレッジベースの 4 言語版 |
 
 ---

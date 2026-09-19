@@ -2,8 +2,8 @@
 
 # 使用限额（Budget Limit）知识库
 
-> 适用版本：**V1.1.0**（公开发布，2026-09-18；内部迭代 V1.0 / V1.0.1 / V1.0.2
-> 的整合，基座 CC Switch 3.20.3）。各迭代明细见 `docs/development_log.md`
+> 适用版本：**V1.1.1**（公开发布，2026-09-18；安装包修复版，功能与 V1.1.0
+> 一致，基座 CC Switch 3.20.3）。各迭代明细见 `docs/development_log.md`
 > 对应条目。本文是整合视图，面向后续维护者，回答「它是什么、为什么这样
 > 设计、改哪里要小心什么」。
 
@@ -363,6 +363,14 @@ CC Switch（V1 明确边界，不是 bug）；`unsupported_credential` = OAuth �
 JPY 汇率）。该币种已保存的汇率会自动回填；首次使用该币种时回填默认值；
 返回前保存会被校验拦截，不会落库错误汇率。
 
+**Q：首次打开提示「无法验证开发者」或「文件已损坏」？**
+- v1.1.1 起：应用包已完整 ad-hoc 签名，不会再报「已损坏」；因未经 Apple
+  公证，首次打开会显示一次性的「无法验证开发者」——**右键点击应用 → 打开
+  → 打开**放行，或终端执行 `xattr -dr com.apple.quarantine
+  "/Applications/CC Switch.app"`。
+- v1.1.0 及更早的安装包存在签名缺失（会报「已损坏」），请一律使用 v1.1.1
+  及以后的安装包。
+
 **Q：如何发布新版本？**
 1. `pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'`
    （无更新签名私钥时关闭 updater 产物；构建依赖 cargo 在 PATH 中）；
@@ -425,7 +433,7 @@ JPY 汇率）。该币种已保存的汇率会自动回填；首次使用该币�
 | `src/hooks/useUsageEventBridge.ts` | 记账事件 → invalidate（主界面刷新） |
 | `src/i18n/locales/{zh,zh-TW,en,ja}.json` | `usageLimit` 命名空间 × 39 keys |
 | `tests/components/UsageLimitDialog.test.tsx` | 前端测试（31） |
-| `docs/release-notes/usage-limit-v1.1.0.md` | 四语发布正文（GitHub Release 与仓库各存一份） |
+| `docs/release-notes/usage-limit-v1.1.{0,1}.md` | 各版本四语发布正文（GitHub Release 与仓库各存一份） |
 | `docs/usage-limit-knowledge-base-{zh,en,zh-TW,ja}.md` | 本知识库的四语言版本 |
 
 ---

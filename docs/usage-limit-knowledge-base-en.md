@@ -2,8 +2,8 @@
 
 # Usage Limit (Budget Limit) Knowledge Base
 
-> Applies to **V1.1.0** (public release, 2026-09-18; the integration of internal
-> iterations V1.0 / V1.0.1 / V1.0.2, base CC Switch 3.20.3). Iteration details
+> Applies to **V1.1.1** (public release, 2026-09-18; installer-fix release,
+> functionality identical to V1.1.0, base CC Switch 3.20.3). Iteration details
 > live in the matching `docs/development_log.md` entries. This document is an
 > integrated view, written for future maintainers: what it is, why it is
 > designed this way, and what to watch out for when changing it.
@@ -422,6 +422,15 @@ currency's saved rate refills automatically — or its default on first use —
 and until then saving is blocked by validation, so a wrong rate can never be
 persisted.
 
+**Q: macOS says "cannot verify developer" or "damaged" on first launch?**
+- Since v1.1.1 the app bundle carries a full ad-hoc signature, so the
+  "damaged" warning is gone; because the plugin is not notarized, the first
+  launch shows a one-time "cannot verify developer" prompt — **right-click
+  the app → Open → Open**, or run `xattr -dr com.apple.quarantine
+  "/Applications/CC Switch.app"` once.
+- Installers from v1.1.0 and earlier lack the bundle signature (they trigger
+  the "damaged" warning); always use v1.1.1 or later.
+
 **Q: How do I cut a new release?**
 1. `pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'`
    (skips updater artifacts when no signing key is present; the build needs
@@ -493,7 +502,7 @@ row is cleaned up via FK CASCADE.
 | `src/hooks/useUsageEventBridge.ts` | Accounting event → invalidate (main UI refresh) |
 | `src/i18n/locales/{zh,zh-TW,en,ja}.json` | `usageLimit` namespace × 39 keys |
 | `tests/components/UsageLimitDialog.test.tsx` | Frontend tests (31) |
-| `docs/release-notes/usage-limit-v1.1.0.md` | 4-language release body (mirrored on the GitHub Release) |
+| `docs/release-notes/usage-limit-v1.1.{0,1}.md` | Per-version 4-language release bodies (mirrored on the GitHub Releases) |
 | `docs/usage-limit-knowledge-base-{zh,en,zh-TW,ja}.md` | The four language editions of this knowledge base |
 
 ---
